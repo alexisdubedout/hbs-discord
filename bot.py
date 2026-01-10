@@ -422,8 +422,8 @@ async def leaderboard(interaction: discord.Interaction):
                 rank_value = get_rank_value(tier, rank, lp)
                 
                 players_data.append({
-                    'name': member.display_name,
-                    'riot_id': f"{account_info['riot_id']}#{account_info['tagline']}",
+                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
+                    'discord_name': member.display_name,
                     'tier': tier,
                     'rank': rank,
                     'lp': lp,
@@ -434,8 +434,8 @@ async def leaderboard(interaction: discord.Interaction):
                 })
             else:
                 players_data.append({
-                    'name': member.display_name,
-                    'riot_id': f"{account_info['riot_id']}#{account_info['tagline']}",
+                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
+                    'discord_name': member.display_name,
                     'tier': 'UNRANKED',
                     'rank': '',
                     'lp': 0,
