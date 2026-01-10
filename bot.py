@@ -69,9 +69,10 @@ class LoLBot(commands.Bot):
         
     async def setup_hook(self):
         """Initialise la connexion à la base de données"""
-        if DATABASE_URL:
+        database_url = os.getenv('DATABASE_URL')
+        if database_url:
             try:
-                self.db_pool = await asyncpg.create_pool(DATABASE_URL)
+                self.db_pool = await asyncpg.create_pool(database_url)
                 print("✅ Connecté à PostgreSQL")
                 await self.init_database()
             except Exception as e:
