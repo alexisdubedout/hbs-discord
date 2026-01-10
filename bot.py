@@ -65,30 +65,104 @@ class LoLBot(commands.Bot):
         intents.voice_states = True
         
         super().__init__(command_prefix="!", intents=intents)
-        self.linked_accounts = self.load_linked_accounts()
-        self.notified_users = self.load_notified_users()
+        self.db_pool = None
         
-    def load_linked_accounts(self):
-        try:
-            with open(LINKED_ACCOUNTS_FILE, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
+    async def setup_hook(self):
+        """Initialise la connexion à la base de données"""
+        if DATABASE_URL:
+            try:
+                self.db_pool = await asyncpg.create_pool(DATABASE_URL)
+                print("✅ Connecté à PostgreSQL")
+                await self.init_database()
+            except Exception as e:
+                print(f"❌ Erreur de connexion à PostgreSQL: {e}")
+        else:
+            print("⚠️ DATABASE_URL non trouvé, utilisation de la mémoire (non persistant)")
+    
+    async def init_database(self):
+        """Crée les tables si elles n'existent pas"""
+        async with self.db_pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS linked_accounts (
+                    discord_id TEXT PRIMARY KEY,
+                    riot_id TEXT NOT NULL,
+                    tagline TEXT NOT NULL,
+                    puuid TEXT NOT NULL
+                )
+            ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS notified_users (
+                    discord_id TEXT PRIMARY KEY,
+                    notified_at TIMESTAMP DEFAULT NOW()
+                )
+            ''')
+            print("✅ Tables de base de données créées")
+    
+    async def get_linked_account(self, discord_id: str):
+        """Récupère un compte lié depuis la DB"""
+        if not self.db_pool:
+            return None
+        async with self.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT riot_id, tagline, puuid FROM linked_accounts WHERE discord_id = $1',
+                discord_id
+            )
+            if row:
+                return {
+                    'riot_id': row['riot_id'],
+                    'tagline': row['tagline'],
+                    'puuid': row['puuid']
+                }
+            return None
+    
+    async def save_linked_account(self, discord_id: str, riot_id: str, tagline: str, puuid: str):
+        """Sauvegarde un compte lié dans la DB"""
+        if not self.db_pool:
+            return False
+        async with self.db_pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO linked_accounts (discord_id, riot_id, tagline, puuid)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (discord_id) DO UPDATE
+                SET riot_id = $2, tagline = $3, puuid = $4
+            ''', discord_id, riot_id, tagline, puuid)
+        return True
+    
+    async def get_all_linked_accounts(self):
+        """Récupère tous les comptes liés"""
+        if not self.db_pool:
             return {}
+        async with self.db_pool.acquire() as conn:
+            rows = await conn.fetch('SELECT * FROM linked_accounts')
+            return {
+                row['discord_id']: {
+                    'riot_id': row['riot_id'],
+                    'tagline': row['tagline'],
+                    'puuid': row['puuid']
+                }
+                for row in rows
+            }
     
-    def save_linked_accounts(self):
-        with open(LINKED_ACCOUNTS_FILE, 'w') as f:
-            json.dump(self.linked_accounts, f, indent=4)
+    async def is_user_notified(self, discord_id: str):
+        """Vérifie si un utilisateur a déjà été notifié"""
+        if not self.db_pool:
+            return False
+        async with self.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT 1 FROM notified_users WHERE discord_id = $1',
+                discord_id
+            )
+            return row is not None
     
-    def load_notified_users(self):
-        try:
-            with open(NOTIFIED_USERS_FILE, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return []
-    
-    def save_notified_users(self):
-        with open(NOTIFIED_USERS_FILE, 'w') as f:
-            json.dump(self.notified_users, f, indent=4)
+    async def mark_user_notified(self, discord_id: str):
+        """Marque un utilisateur comme notifié"""
+        if not self.db_pool:
+            return
+        async with self.db_pool.acquire() as conn:
+            await conn.execute(
+                'INSERT INTO notified_users (discord_id) VALUES ($1) ON CONFLICT DO NOTHING',
+                discord_id
+            )
 
 bot = LoLBot()
 
@@ -97,7 +171,10 @@ async def send_link_reminder(user: discord.Member):
     user_id = str(user.id)
     
     # Vérifier si déjà notifié ou déjà lié
-    if user_id in bot.notified_users or user_id in bot.linked_accounts:
+    is_notified = await bot.is_user_notified(user_id)
+    linked_account = await bot.get_linked_account(user_id)
+    
+    if is_notified or linked_account:
         return
     
     try:
@@ -121,8 +198,7 @@ async def send_link_reminder(user: discord.Member):
         await user.send(embed=embed)
         
         # Marquer comme notifié
-        bot.notified_users.append(user_id)
-        bot.save_notified_users()
+        await bot.mark_user_notified(user_id)
         
     except discord.Forbidden:
         # L'utilisateur a bloqué les DMs
@@ -210,7 +286,10 @@ async def on_message(message):
     
     # Vérifier si l'utilisateur n'est pas lié
     user_id = str(message.author.id)
-    if user_id not in bot.linked_accounts and user_id not in bot.notified_users:
+    linked_account = await bot.get_linked_account(user_id)
+    is_notified = await bot.is_user_notified(user_id)
+    
+    if not linked_account and not is_notified:
         await send_link_reminder(message.author)
     
     await bot.process_commands(message)
@@ -220,7 +299,10 @@ async def on_voice_state_update(member, before, after):
     # Quelqu'un rejoint un vocal
     if before.channel is None and after.channel is not None:
         user_id = str(member.id)
-        if user_id not in bot.linked_accounts and user_id not in bot.notified_users:
+        linked_account = await bot.get_linked_account(user_id)
+        is_notified = await bot.is_user_notified(user_id)
+        
+        if not linked_account and not is_notified:
             await send_link_reminder(member)
 
 @bot.tree.command(name="say", description="[ADMIN] Fait parler le bot")
@@ -259,19 +341,12 @@ async def link(interaction: discord.Interaction, riot_id: str, tagline: str):
         return
     
     user_id = str(interaction.user.id)
-    bot.linked_accounts[user_id] = {
-        "riot_id": riot_id,
-        "tagline": tagline,
-        "puuid": account['puuid']
-    }
-    bot.save_linked_accounts()
+    success = await bot.save_linked_account(user_id, riot_id, tagline, account['puuid'])
     
-    # Retirer des utilisateurs notifiés s'il y était
-    if user_id in bot.notified_users:
-        bot.notified_users.remove(user_id)
-        bot.save_notified_users()
-    
-    await interaction.followup.send(f"✅ Compte lié avec succès: **{riot_id}#{tagline}**")
+    if success:
+        await interaction.followup.send(f"✅ Compte lié avec succès: **{riot_id}#{tagline}**")
+    else:
+        await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
 
 @bot.tree.command(name="admin_link", description="[ADMIN] Lie un compte Riot pour un autre utilisateur")
 @app_commands.describe(
@@ -298,31 +373,26 @@ async def admin_link(interaction: discord.Interaction, user: discord.Member, rio
         return
     
     user_id = str(user.id)
-    bot.linked_accounts[user_id] = {
-        "riot_id": riot_id,
-        "tagline": tagline,
-        "puuid": account['puuid']
-    }
-    bot.save_linked_accounts()
+    success = await bot.save_linked_account(user_id, riot_id, tagline, account['puuid'])
     
-    # Retirer des utilisateurs notifiés s'il y était
-    if user_id in bot.notified_users:
-        bot.notified_users.remove(user_id)
-        bot.save_notified_users()
-    
-    await interaction.followup.send(f"✅ Compte lié pour {user.mention}: **{riot_id}#{tagline}**")
+    if success:
+        await interaction.followup.send(f"✅ Compte lié pour {user.mention}: **{riot_id}#{tagline}**")
+    else:
+        await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
 
 @bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
 async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
     
-    if not bot.linked_accounts:
+    linked_accounts = await bot.get_all_linked_accounts()
+    
+    if not linked_accounts:
         await interaction.followup.send("❌ Aucun compte lié pour le moment.")
         return
     
     players_data = []
     
-    for discord_id, account_info in bot.linked_accounts.items():
+    for discord_id, account_info in linked_accounts.items():
         try:
             member = interaction.guild.get_member(int(discord_id))
             if not member:
