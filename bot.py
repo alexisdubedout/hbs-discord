@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import aiohttp
 import json
 import random
@@ -422,3 +422,354 @@ async def leaderboard(interaction: discord.Interaction):
         return
     
     players_data = []
+    
+    for discord_id, account_info in linked_accounts.items():
+        try:
+            member = interaction.guild.get_member(int(discord_id))
+            if not member:
+                continue
+            
+            summoner = await get_summoner_data(account_info['puuid'])
+            if not summoner:
+                print(f"Impossible de récupérer les données pour {member.display_name} (PUUID: {account_info['puuid'][:20]}...)")
+                continue
+            
+            # Utiliser directement le PUUID depuis account_info
+            ranked_stats = await get_ranked_stats(account_info['puuid'])
+            
+            if ranked_stats:
+                tier = ranked_stats['tier']
+                rank = ranked_stats['rank']
+                lp = ranked_stats['leaguePoints']
+                wins = ranked_stats['wins']
+                losses = ranked_stats['losses']
+                total = wins + losses
+                winrate = round((wins / total) * 100, 1) if total > 0 else 0
+                
+                rank_value = get_rank_value(tier, rank, lp)
+                
+                players_data.append({
+                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
+                    'discord_name': member.display_name,
+                    'tier': tier,
+                    'rank': rank,
+                    'lp': lp,
+                    'wins': wins,
+                    'losses': losses,
+                    'winrate': winrate,
+                    'rank_value': rank_value
+                })
+            else:
+                players_data.append({
+                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
+                    'discord_name': member.display_name,
+                    'tier': 'UNRANKED',
+                    'rank': '',
+                    'lp': 0,
+                    'wins': 0,
+                    'losses': 0,
+                    'winrate': 0,
+                    'rank_value': -1
+                })
+        except KeyError as e:
+            print(f"Erreur KeyError pour {discord_id}: clé manquante = {e}")
+            continue
+        except Exception as e:
+            print(f"Erreur générale pour {discord_id}: {type(e).__name__} - {e}")
+            continue
+    
+    if not players_data:
+        await interaction.followup.send("❌ Aucune donnée disponible.")
+        return
+    
+    # Trier par rang
+    players_data.sort(key=lambda x: x['rank_value'], reverse=True)
+    
+    # Créer l'embed
+    embed = discord.Embed(
+        title="🏆 Classement du Serveur",
+        color=discord.Color.gold(),
+        description="Classement SoloQ des joueurs du serveur"
+    )
+    
+    for i, player in enumerate(players_data, 1):
+        emoji = RANK_EMOJIS.get(player['tier'], "❓")
+        
+        if player['tier'] == 'UNRANKED':
+            rank_str = f"{emoji} **Unranked**"
+        elif player['tier'] in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+            rank_str = f"{emoji} **{player['tier'].title()}** - {player['lp']} LP"
+        else:
+            rank_str = f"{emoji} **{player['tier'].title()} {player['rank']}** - {player['lp']} LP"
+        
+        value = f"{rank_str}\n`{player['wins']}W {player['losses']}L - {player['winrate']}% WR`"
+        
+        embed.add_field(
+            name=f"#{i} {player['name']}",
+            value=value,
+            inline=False
+        )
+    
+    embed.set_footer(text=f"Mis à jour le")
+    embed.timestamp = discord.utils.utcnow()
+    
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="random_teams", description="Génère 2 équipes aléatoires depuis le vocal")
+async def random_teams(interaction: discord.Interaction):
+    # Vérifier si l'utilisateur est dans un vocal
+    if not interaction.user.voice:
+        await interaction.response.send_message("❌ Tu dois être dans un channel vocal!", ephemeral=True)
+        return
+    
+    voice_channel = interaction.user.voice.channel
+    members = [m for m in voice_channel.members if not m.bot]
+    
+    if len(members) < 2:
+        await interaction.response.send_message("❌ Pas assez de joueurs dans le vocal!", ephemeral=True)
+        return
+    
+    if len(members) > 10:
+        await interaction.response.send_message("❌ Trop de joueurs dans le vocal (max 10)!", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    
+    # Mélanger les joueurs
+    random.shuffle(members)
+    
+    # Diviser en 2 équipes
+    team_size = len(members) // 2
+    team1 = members[:team_size]
+    team2 = members[team_size:team_size*2]
+    
+    # Assigner rôles et champions
+    roles_pool = ROLES.copy()
+    random.shuffle(roles_pool)
+    
+    def assign_team(team):
+        assignments = []
+        available_roles = roles_pool.copy()
+        for member in team:
+            if available_roles:
+                role = available_roles.pop(0)
+            else:
+                role = random.choice(ROLES)
+            champion = random.choice(CHAMPIONS)
+            assignments.append((member, role, champion))
+        return assignments
+    
+    team1_assignments = assign_team(team1)
+    team2_assignments = assign_team(team2)
+    
+    # Créer l'embed
+    embed = discord.Embed(
+        title="🎲 Teams Aléatoires",
+        color=discord.Color.blue(),
+        description=f"Généré depuis **{voice_channel.name}**"
+    )
+    
+    # Team 1
+    team1_text = ""
+    for member, role, champion in team1_assignments:
+        team1_text += f"**{role}**: {member.mention} - *{champion}*\n"
+    
+    embed.add_field(name="🔵 Team Bleue", value=team1_text, inline=True)
+    
+    # Team 2
+    team2_text = ""
+    for member, role, champion in team2_assignments:
+        team2_text += f"**{role}**: {member.mention} - *{champion}*\n"
+    
+    embed.add_field(name="🔴 Team Rouge", value=team2_text, inline=True)
+    
+    if len(members) % 2 != 0:
+        leftover = members[-1]
+        embed.add_field(
+            name="⚪ Joueur supplémentaire",
+            value=f"{leftover.mention}",
+            inline=False
+        )
+    
+    embed.set_footer(text="Good luck, have fun!")
+    embed.timestamp = discord.utils.utcnow()
+    
+    await interaction.followup.send(embed=embed)
+
+@bot.tree.command(name="compare", description="Compare deux joueurs du serveur")
+@app_commands.describe(
+    joueur1="Premier joueur à comparer",
+    joueur2="Deuxième joueur à comparer"
+)
+async def compare(interaction: discord.Interaction, joueur1: discord.Member, joueur2: discord.Member):
+    await interaction.response.defer()
+    
+    # Récupérer les comptes liés
+    account1 = await bot.get_linked_account(str(joueur1.id))
+    account2 = await bot.get_linked_account(str(joueur2.id))
+    
+    if not account1:
+        await interaction.followup.send(f"❌ {joueur1.mention} n'a pas lié son compte.")
+        return
+    
+    if not account2:
+        await interaction.followup.send(f"❌ {joueur2.mention} n'a pas lié son compte.")
+        return
+    
+    # Récupérer les stats ranked
+    stats1 = await get_ranked_stats(account1['puuid'])
+    stats2 = await get_ranked_stats(account2['puuid'])
+    
+    # Créer l'embed de comparaison
+    embed = discord.Embed(
+        title="⚔️ Comparaison de Joueurs",
+        color=discord.Color.purple()
+    )
+    
+    # Joueur 1
+    if stats1:
+        tier1 = stats1['tier']
+        rank1 = stats1['rank']
+        lp1 = stats1['leaguePoints']
+        wins1 = stats1['wins']
+        losses1 = stats1['losses']
+        wr1 = round((wins1 / (wins1 + losses1)) * 100, 1) if (wins1 + losses1) > 0 else 0
+        
+        emoji1 = RANK_EMOJIS.get(tier1, "❓")
+        if tier1 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+            rank_str1 = f"{emoji1} {tier1.title()} - {lp1} LP"
+        else:
+            rank_str1 = f"{emoji1} {tier1.title()} {rank1} - {lp1} LP"
+        
+        player1_text = f"**{account1['riot_id']}#{account1['tagline']}**\n{rank_str1}\n`{wins1}W {losses1}L - {wr1}% WR`"
+    else:
+        player1_text = f"**{account1['riot_id']}#{account1['tagline']}**\n❓ Unranked\n`Pas de games ranked`"
+    
+    # Joueur 2
+    if stats2:
+        tier2 = stats2['tier']
+        rank2 = stats2['rank']
+        lp2 = stats2['leaguePoints']
+        wins2 = stats2['wins']
+        losses2 = stats2['losses']
+        wr2 = round((wins2 / (wins2 + losses2)) * 100, 1) if (wins2 + losses2) > 0 else 0
+
+        emoji2 = RANK_EMOJIS.get(tier2, "❓")
+        if tier2 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+            rank_str2 = f"{emoji2} {tier2.title()} - {lp2} LP"
+        else:
+            rank_str2 = f"{emoji2} {tier2.title()} {rank2} - {lp2} LP"
+
+        player2_text = (
+            f"**{account2['riot_id']}#{account2['tagline']}**\n"
+            f"{rank_str2}\n"
+            f"`{wins2}W {losses2}L - {wr2}% WR`"
+        )
+    else:
+        player2_text = (
+            f"**{account2['riot_id']}#{account2['tagline']}**\n"
+            f"❓ Unranked\n"
+            f"`Pas de games ranked`"
+        )
+
+    embed.add_field(
+        name=f"🔵 {joueur1.display_name}",
+        value=player1_text,
+        inline=True
+    )
+    embed.add_field(
+        name=f"🔴 {joueur2.display_name}",
+        value=player2_text,
+        inline=True
+    )
+
+    # Verdict
+    if stats1 and stats2:
+        rank_val1 = get_rank_value(tier1, rank1, lp1)
+        rank_val2 = get_rank_value(tier2, rank2, lp2)
+
+        if rank_val1 > rank_val2:
+            winner = f"🏆 {joueur1.mention} est mieux classé !"
+        elif rank_val2 > rank_val1:
+            winner = f"🏆 {joueur2.mention} est mieux classé !"
+        else:
+            winner = "🤝 Égalité parfaite !"
+
+        embed.add_field(name="Verdict", value=winner, inline=False)
+
+    embed.timestamp = discord.utils.utcnow()
+    await interaction.followup.send(embed=embed)
+
+@tasks.loop(minutes=30)
+async def check_rank_changes():
+    """Vérifie les changements de rang toutes les 30 minutes"""
+    if not bot.db_pool:
+        return
+
+    linked_accounts = await bot.get_all_linked_accounts()
+
+    for discord_id, account_info in linked_accounts.items():
+        try:
+            stats = await get_ranked_stats(account_info['puuid'])
+
+            if not stats:
+                continue
+
+            tier = stats['tier']
+            rank = stats['rank']
+            lp = stats['leaguePoints']
+
+            last_rank = await bot.get_last_rank(discord_id)
+
+            # Premier enregistrement
+            if not last_rank:
+                await bot.save_rank(discord_id, tier, rank, lp)
+                continue
+
+            old_value = get_rank_value(
+                last_rank['tier'],
+                last_rank['rank'],
+                last_rank['lp']
+            )
+            new_value = get_rank_value(tier, rank, lp)
+
+            if new_value != old_value:
+                await bot.save_rank(discord_id, tier, rank, lp)
+
+                guilds = bot.guilds
+                for guild in guilds:
+                    member = guild.get_member(int(discord_id))
+                    if not member:
+                        continue
+
+                    emoji = RANK_EMOJIS.get(tier, "❓")
+
+                    if tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+                        rank_str = f"{emoji} {tier.title()} - {lp} LP"
+                    else:
+                        rank_str = f"{emoji} {tier.title()} {rank} - {lp} LP"
+
+                    try:
+                        await member.send(
+                            f"📈 **Changement de rang détecté !**\n"
+                            f"Tu es maintenant **{rank_str}** 🎉"
+                        )
+                    except discord.Forbidden:
+                        pass
+
+        except Exception as e:
+            print(f"Erreur check_rank_changes pour {discord_id}: {e}")
+@bot.event
+async def on_ready():
+    print(f"{bot.user} est connecté !")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synchronisé {len(synced)} commandes")
+    except Exception as e:
+        print(f"Erreur sync commandes: {e}")
+
+    if not check_rank_changes.is_running():
+        check_rank_changes.start()
+
+
+bot.run(DISCORD_TOKEN)
