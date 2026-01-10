@@ -5,6 +5,7 @@ import aiohttp
 import json
 import random
 import os
+import asyncpg
 from typing import Optional
 
 # Configuration
