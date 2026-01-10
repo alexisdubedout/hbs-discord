@@ -14,10 +14,6 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', 'VOTRE_TOKEN_DISCORD')
 REGION = 'euw1'
 PLATFORM = 'europe'
 
-# Fichiers de stockage
-LINKED_ACCOUNTS_FILE = 'linked_accounts.json'
-NOTIFIED_USERS_FILE = 'notified_users.json'
-
 # Liste complète des champions LoL (à jour patch 14.24)
 CHAMPIONS = [
     "Aatrox", "Ahri", "Akali", "Akshan", "Alistar", "Amumu", "Anivia", "Annie", "Aphelios",
@@ -98,6 +94,16 @@ class LoLBot(commands.Bot):
                     notified_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rank_history (
+                    discord_id TEXT,
+                    tier TEXT NOT NULL,
+                    rank TEXT NOT NULL,
+                    lp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    PRIMARY KEY (discord_id, timestamp)
+                )
+            ''')
             print("✅ Tables de base de données créées")
     
     async def get_linked_account(self, discord_id: str):
@@ -164,6 +170,29 @@ class LoLBot(commands.Bot):
             await conn.execute(
                 'INSERT INTO notified_users (discord_id) VALUES ($1) ON CONFLICT DO NOTHING',
                 discord_id
+            )
+    
+    async def get_last_rank(self, discord_id: str):
+        """Récupère le dernier rang connu"""
+        if not self.db_pool:
+            return None
+        async with self.db_pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT tier, rank, lp FROM rank_history WHERE discord_id = $1 ORDER BY timestamp DESC LIMIT 1',
+                discord_id
+            )
+            if row:
+                return {'tier': row['tier'], 'rank': row['rank'], 'lp': row['lp']}
+            return None
+    
+    async def save_rank(self, discord_id: str, tier: str, rank: str, lp: int):
+        """Sauvegarde un nouveau rang dans l'historique"""
+        if not self.db_pool:
+            return
+        async with self.db_pool.acquire() as conn:
+            await conn.execute(
+                'INSERT INTO rank_history (discord_id, tier, rank, lp) VALUES ($1, $2, $3, $4)',
+                discord_id, tier, rank, lp
             )
 
 bot = LoLBot()
@@ -389,205 +418,4 @@ async def leaderboard(interaction: discord.Interaction):
     linked_accounts = await bot.get_all_linked_accounts()
     
     if not linked_accounts:
-        await interaction.followup.send("❌ Aucun compte lié pour le moment.")
-        return
-    
-    players_data = []
-    
-    for discord_id, account_info in linked_accounts.items():
-        try:
-            member = interaction.guild.get_member(int(discord_id))
-            if not member:
-                continue
-            
-            summoner = await get_summoner_data(account_info['puuid'])
-            if not summoner:
-                print(f"Impossible de récupérer les données pour {member.display_name} (PUUID: {account_info['puuid'][:20]}...)")
-                continue
-            
-            print(f"DEBUG - Summoner data pour {member.display_name}: {summoner}")
-            
-            # Utiliser directement le PUUID depuis account_info
-            ranked_stats = await get_ranked_stats(account_info['puuid'])
-            
-            if ranked_stats:
-                tier = ranked_stats['tier']
-                rank = ranked_stats['rank']
-                lp = ranked_stats['leaguePoints']
-                wins = ranked_stats['wins']
-                losses = ranked_stats['losses']
-                total = wins + losses
-                winrate = round((wins / total) * 100, 1) if total > 0 else 0
-                
-                rank_value = get_rank_value(tier, rank, lp)
-                
-                players_data.append({
-                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
-                    'discord_name': member.display_name,
-                    'tier': tier,
-                    'rank': rank,
-                    'lp': lp,
-                    'wins': wins,
-                    'losses': losses,
-                    'winrate': winrate,
-                    'rank_value': rank_value
-                })
-            else:
-                players_data.append({
-                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
-                    'discord_name': member.display_name,
-                    'tier': 'UNRANKED',
-                    'rank': '',
-                    'lp': 0,
-                    'wins': 0,
-                    'losses': 0,
-                    'winrate': 0,
-                    'rank_value': -1
-                })
-        except KeyError as e:
-            print(f"Erreur KeyError pour {discord_id}: clé manquante = {e}")
-            print(f"Données disponibles: {summoner.keys() if summoner else 'summoner is None'}")
-            continue
-        except Exception as e:
-            print(f"Erreur générale pour {discord_id}: {type(e).__name__} - {e}")
-            continue
-    
-    if not players_data:
-        await interaction.followup.send("❌ Aucune donnée disponible.")
-        return
-    
-    # Trier par rang
-    players_data.sort(key=lambda x: x['rank_value'], reverse=True)
-    
-    # Créer l'embed
-    embed = discord.Embed(
-        title="🏆 Classement du Serveur",
-        color=discord.Color.gold(),
-        description="Classement SoloQ des joueurs du serveur"
-    )
-    
-    for i, player in enumerate(players_data, 1):
-        emoji = RANK_EMOJIS.get(player['tier'], "❓")
-        
-        if player['tier'] == 'UNRANKED':
-            rank_str = f"{emoji} **Unranked**"
-        elif player['tier'] in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
-            rank_str = f"{emoji} **{player['tier'].title()}** - {player['lp']} LP"
-        else:
-            rank_str = f"{emoji} **{player['tier'].title()} {player['rank']}** - {player['lp']} LP"
-        
-        value = f"{rank_str}\n`{player['wins']}W {player['losses']}L - {player['winrate']}% WR`"
-        
-        embed.add_field(
-            name=f"#{i} {player['name']}",
-            value=value,
-            inline=False
-        )
-    
-    embed.set_footer(text=f"Mis à jour le")
-    embed.timestamp = discord.utils.utcnow()
-    
-    await interaction.followup.send(embed=embed)
-
-@bot.tree.command(name="random_teams", description="Génère 2 équipes aléatoires depuis le vocal")
-async def random_teams(interaction: discord.Interaction):
-    # Vérifier si l'utilisateur est dans un vocal
-    if not interaction.user.voice:
-        await interaction.response.send_message("❌ Tu dois être dans un channel vocal!", ephemeral=True)
-        return
-    
-    voice_channel = interaction.user.voice.channel
-    members = [m for m in voice_channel.members if not m.bot]
-    
-    if len(members) < 2:
-        await interaction.response.send_message("❌ Pas assez de joueurs dans le vocal!", ephemeral=True)
-        return
-    
-    if len(members) > 10:
-        await interaction.response.send_message("❌ Trop de joueurs dans le vocal (max 10)!", ephemeral=True)
-        return
-    
-    await interaction.response.defer()
-    
-    # Mélanger les joueurs
-    random.shuffle(members)
-    
-    # Diviser en 2 équipes
-    team_size = len(members) // 2
-    team1 = members[:team_size]
-    team2 = members[team_size:team_size*2]
-    
-    # Assigner rôles et champions
-    roles_pool = ROLES.copy()
-    random.shuffle(roles_pool)
-    
-    def assign_team(team):
-        assignments = []
-        available_roles = roles_pool.copy()
-        for member in team:
-            if available_roles:
-                role = available_roles.pop(0)
-            else:
-                role = random.choice(ROLES)
-            champion = random.choice(CHAMPIONS)
-            assignments.append((member, role, champion))
-        return assignments
-    
-    team1_assignments = assign_team(team1)
-    team2_assignments = assign_team(team2)
-    
-    # Créer l'embed
-    embed = discord.Embed(
-        title="🎲 Teams Aléatoires",
-        color=discord.Color.blue(),
-        description=f"Généré depuis **{voice_channel.name}**"
-    )
-    
-    # Team 1
-    team1_text = ""
-    for member, role, champion in team1_assignments:
-        team1_text += f"**{role}**: {member.mention} - *{champion}*\n"
-    
-    embed.add_field(name="🔵 Team Bleue", value=team1_text, inline=True)
-    
-    # Team 2
-    team2_text = ""
-    for member, role, champion in team2_assignments:
-        team2_text += f"**{role}**: {member.mention} - *{champion}*\n"
-    
-    embed.add_field(name="🔴 Team Rouge", value=team2_text, inline=True)
-    
-    if len(members) % 2 != 0:
-        leftover = members[-1]
-        embed.add_field(
-            name="⚪ Joueur supplémentaire",
-            value=f"{leftover.mention}",
-            inline=False
-        )
-    
-    embed.set_footer(text="Good luck, have fun!")
-    embed.timestamp = discord.utils.utcnow()
-    
-    await interaction.followup.send(embed=embed)
-
-# Lancer le bot
-if __name__ == "__main__":
-    # Debug : vérifier que le token est bien chargé
-    if not DISCORD_TOKEN or DISCORD_TOKEN == 'VOTRE_TOKEN_DISCORD':
-        print("ERREUR: Token Discord non trouvé dans les variables d'environnement!")
-        print("Vérifiez que DISCORD_TOKEN est bien défini dans Railway")
-        exit(1)
-    
-    print(f"Token Discord chargé (premiers caractères): {DISCORD_TOKEN[:20]}...")
-    print(f"Longueur du token Discord: {len(DISCORD_TOKEN)}")
-    
-    # Debug : vérifier la clé Riot
-    if not RIOT_API_KEY or RIOT_API_KEY == 'VOTRE_CLE_API_RIOT':
-        print("ERREUR: Clé API Riot non trouvée dans les variables d'environnement!")
-        print("Vérifiez que RIOT_API_KEY est bien défini dans Railway")
-        exit(1)
-    
-    print(f"Clé Riot chargée (premiers caractères): {RIOT_API_KEY[:15]}...")
-    print(f"Longueur de la clé Riot: {len(RIOT_API_KEY)}")
-    
-    bot.run(DISCORD_TOKEN)
+        await interaction.followup.send("❌ Aucun compte lié pour le
