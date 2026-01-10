@@ -418,4 +418,7 @@ async def leaderboard(interaction: discord.Interaction):
     linked_accounts = await bot.get_all_linked_accounts()
     
     if not linked_accounts:
-        await interaction.followup.send("❌ Aucun compte lié pour le
+        await interaction.followup.send("❌ Aucun compte lié pour le moment.")
+        return
+    
+    players_data = []
