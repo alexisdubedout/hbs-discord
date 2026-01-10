@@ -484,4 +484,13 @@ async def random_teams(interaction: discord.Interaction):
 
 # Lancer le bot
 if __name__ == "__main__":
+    # Debug : vérifier que le token est bien chargé
+    if not DISCORD_TOKEN or DISCORD_TOKEN == 'VOTRE_TOKEN_DISCORD':
+        print("ERREUR: Token Discord non trouvé dans les variables d'environnement!")
+        print("Vérifiez que DISCORD_TOKEN est bien défini dans Railway")
+        exit(1)
+    
+    print(f"Token chargé (premiers caractères): {DISCORD_TOKEN[:20]}...")
+    print(f"Longueur du token: {len(DISCORD_TOKEN)}")
+    
     bot.run(DISCORD_TOKEN)
