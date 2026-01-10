@@ -13,8 +13,9 @@ DISCORD_TOKEN = os.getenv('DISCORD_TOKEN', 'VOTRE_TOKEN_DISCORD')
 REGION = 'euw1'
 PLATFORM = 'europe'
 
-# Fichier de stockage des comptes liés
+# Fichiers de stockage
 LINKED_ACCOUNTS_FILE = 'linked_accounts.json'
+NOTIFIED_USERS_FILE = 'notified_users.json'
 
 # Liste complète des champions LoL (à jour patch 14.24)
 CHAMPIONS = [
@@ -65,6 +66,7 @@ class LoLBot(commands.Bot):
         
         super().__init__(command_prefix="!", intents=intents)
         self.linked_accounts = self.load_linked_accounts()
+        self.notified_users = self.load_notified_users()
         
     def load_linked_accounts(self):
         try:
@@ -76,8 +78,57 @@ class LoLBot(commands.Bot):
     def save_linked_accounts(self):
         with open(LINKED_ACCOUNTS_FILE, 'w') as f:
             json.dump(self.linked_accounts, f, indent=4)
+    
+    def load_notified_users(self):
+        try:
+            with open(NOTIFIED_USERS_FILE, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+    
+    def save_notified_users(self):
+        with open(NOTIFIED_USERS_FILE, 'w') as f:
+            json.dump(self.notified_users, f, indent=4)
 
 bot = LoLBot()
+
+async def send_link_reminder(user: discord.Member):
+    """Envoie un DM de rappel pour lier le compte"""
+    user_id = str(user.id)
+    
+    # Vérifier si déjà notifié ou déjà lié
+    if user_id in bot.notified_users or user_id in bot.linked_accounts:
+        return
+    
+    try:
+        embed = discord.Embed(
+            title="🎮 Bienvenue sur le serveur LoL !",
+            description="Hey ! Je vois que tu n'as pas encore lié ton compte Riot.",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Comment faire ?",
+            value="Utilise la commande `/link` dans le serveur :\n`/link TonPseudo TAG`\n\nExemple : `/link Faker KR1`",
+            inline=False
+        )
+        embed.add_field(
+            name="Pourquoi ?",
+            value="Ça permet d'afficher le classement du serveur et de participer aux teams aléatoires !",
+            inline=False
+        )
+        embed.set_footer(text="Ce message est automatique et envoyé une seule fois")
+        
+        await user.send(embed=embed)
+        
+        # Marquer comme notifié
+        bot.notified_users.append(user_id)
+        bot.save_notified_users()
+        
+    except discord.Forbidden:
+        # L'utilisateur a bloqué les DMs
+        pass
+    except Exception as e:
+        print(f"Erreur lors de l'envoi du DM à {user.name}: {e}")
 
 async def get_summoner_by_riot_id(riot_id: str, tagline: str):
     """Récupère les infos du compte via Riot ID"""
@@ -143,6 +194,44 @@ async def on_ready():
     except Exception as e:
         print(f"Erreur lors de la sync: {e}")
 
+@bot.event
+async def on_message(message):
+    # Ignorer les messages du bot
+    if message.author.bot:
+        return
+    
+    # Vérifier si l'utilisateur n'est pas lié
+    user_id = str(message.author.id)
+    if user_id not in bot.linked_accounts and user_id not in bot.notified_users:
+        await send_link_reminder(message.author)
+    
+    await bot.process_commands(message)
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Quelqu'un rejoint un vocal
+    if before.channel is None and after.channel is not None:
+        user_id = str(member.id)
+        if user_id not in bot.linked_accounts and user_id not in bot.notified_users:
+            await send_link_reminder(member)
+
+@bot.tree.command(name="say", description="[ADMIN] Fait parler le bot")
+@app_commands.describe(
+    channel="Le channel où envoyer le message",
+    message="Le message à envoyer"
+)
+async def say(interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+    # Vérifier les permissions admin
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        return
+    
+    # Réponse invisible
+    await interaction.response.send_message(f"✅ Message envoyé dans {channel.mention}", ephemeral=True)
+    
+    # Envoyer le message dans le channel
+    await channel.send(message)
+
 @bot.tree.command(name="link", description="Lie ton compte Riot à Discord")
 @app_commands.describe(
     riot_id="Ton Riot ID (ex: Faker)",
@@ -161,12 +250,18 @@ async def link(interaction: discord.Interaction, riot_id: str, tagline: str):
         await interaction.followup.send("❌ Erreur lors de la récupération des données.")
         return
     
-    bot.linked_accounts[str(interaction.user.id)] = {
+    user_id = str(interaction.user.id)
+    bot.linked_accounts[user_id] = {
         "riot_id": riot_id,
         "tagline": tagline,
         "puuid": account['puuid']
     }
     bot.save_linked_accounts()
+    
+    # Retirer des utilisateurs notifiés s'il y était
+    if user_id in bot.notified_users:
+        bot.notified_users.remove(user_id)
+        bot.save_notified_users()
     
     await interaction.followup.send(f"✅ Compte lié avec succès: **{riot_id}#{tagline}**")
 
@@ -194,12 +289,18 @@ async def admin_link(interaction: discord.Interaction, user: discord.Member, rio
         await interaction.followup.send("❌ Erreur lors de la récupération des données.")
         return
     
-    bot.linked_accounts[str(user.id)] = {
+    user_id = str(user.id)
+    bot.linked_accounts[user_id] = {
         "riot_id": riot_id,
         "tagline": tagline,
         "puuid": account['puuid']
     }
     bot.save_linked_accounts()
+    
+    # Retirer des utilisateurs notifiés s'il y était
+    if user_id in bot.notified_users:
+        bot.notified_users.remove(user_id)
+        bot.save_notified_users()
     
     await interaction.followup.send(f"✅ Compte lié pour {user.mention}: **{riot_id}#{tagline}**")
 
