@@ -5,7 +5,6 @@ import aiohttp
 import json
 import random
 import os
-import asyncpg
 from typing import Optional
 
 # Configuration
@@ -238,9 +237,9 @@ async def get_summoner_data(puuid: str):
                 print(f"ERREUR API RIOT: Status {resp.status}")
                 return None
 
-async def get_ranked_stats(summoner_id: str):
-    """Récupère les stats ranked du joueur"""
-    url = f"https://{REGION}.api.riotgames.com/lol/league/v4/entries/by-summoner/{summoner_id}"
+async def get_ranked_stats(puuid: str):
+    """Récupère les stats ranked du joueur via PUUID"""
+    url = f"https://{REGION}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}"
     headers = {"X-Riot-Token": RIOT_API_KEY}
     
     async with aiohttp.ClientSession() as session:
@@ -407,11 +406,8 @@ async def leaderboard(interaction: discord.Interaction):
             
             print(f"DEBUG - Summoner data pour {member.display_name}: {summoner}")
             
-            if 'id' not in summoner:
-                print(f"ERREUR: 'id' manquant dans la réponse API pour {member.display_name}")
-                continue
-            
-            ranked_stats = await get_ranked_stats(summoner['id'])
+            # Utiliser directement le PUUID depuis account_info
+            ranked_stats = await get_ranked_stats(account_info['puuid'])
             
             if ranked_stats:
                 tier = ranked_stats['tier']
