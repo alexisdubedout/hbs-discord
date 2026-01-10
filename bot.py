@@ -150,7 +150,15 @@ async def get_summoner_data(puuid: str):
         async with session.get(url, headers=headers) as resp:
             if resp.status == 200:
                 return await resp.json()
-            return None
+            elif resp.status == 401:
+                print(f"ERREUR API RIOT: Clé invalide ou expirée (401)")
+                return None
+            elif resp.status == 403:
+                print(f"ERREUR API RIOT: Clé non autorisée (403)")
+                return None
+            else:
+                print(f"ERREUR API RIOT: Status {resp.status}")
+                return None
 
 async def get_ranked_stats(summoner_id: str):
     """Récupère les stats ranked du joueur"""
@@ -322,6 +330,13 @@ async def leaderboard(interaction: discord.Interaction):
             
             summoner = await get_summoner_data(account_info['puuid'])
             if not summoner:
+                print(f"Impossible de récupérer les données pour {member.display_name} (PUUID: {account_info['puuid'][:20]}...)")
+                continue
+            
+            print(f"DEBUG - Summoner data pour {member.display_name}: {summoner}")
+            
+            if 'id' not in summoner:
+                print(f"ERREUR: 'id' manquant dans la réponse API pour {member.display_name}")
                 continue
             
             ranked_stats = await get_ranked_stats(summoner['id'])
@@ -360,8 +375,12 @@ async def leaderboard(interaction: discord.Interaction):
                     'winrate': 0,
                     'rank_value': -1
                 })
+        except KeyError as e:
+            print(f"Erreur KeyError pour {discord_id}: clé manquante = {e}")
+            print(f"Données disponibles: {summoner.keys() if summoner else 'summoner is None'}")
+            continue
         except Exception as e:
-            print(f"Erreur pour {discord_id}: {e}")
+            print(f"Erreur générale pour {discord_id}: {type(e).__name__} - {e}")
             continue
     
     if not players_data:
@@ -490,7 +509,16 @@ if __name__ == "__main__":
         print("Vérifiez que DISCORD_TOKEN est bien défini dans Railway")
         exit(1)
     
-    print(f"Token chargé (premiers caractères): {DISCORD_TOKEN[:20]}...")
-    print(f"Longueur du token: {len(DISCORD_TOKEN)}")
+    print(f"Token Discord chargé (premiers caractères): {DISCORD_TOKEN[:20]}...")
+    print(f"Longueur du token Discord: {len(DISCORD_TOKEN)}")
+    
+    # Debug : vérifier la clé Riot
+    if not RIOT_API_KEY or RIOT_API_KEY == 'VOTRE_CLE_API_RIOT':
+        print("ERREUR: Clé API Riot non trouvée dans les variables d'environnement!")
+        print("Vérifiez que RIOT_API_KEY est bien défini dans Railway")
+        exit(1)
+    
+    print(f"Clé Riot chargée (premiers caractères): {RIOT_API_KEY[:15]}...")
+    print(f"Longueur de la clé Riot: {len(RIOT_API_KEY)}")
     
     bot.run(DISCORD_TOKEN)
