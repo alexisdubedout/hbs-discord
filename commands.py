@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 import random
-from config import CHAMPIONS, ROLES, RANK_EMOJIS, get_rank_value
+import config
 from riot_api import get_summoner_by_riot_id, get_summoner_data, get_ranked_stats
 
 def register_commands(bot):
@@ -110,7 +110,7 @@ def register_commands(bot):
                     total = wins + losses
                     winrate = round((wins / total) * 100, 1) if total > 0 else 0
                     
-                    rank_value = get_rank_value(tier, rank, lp)
+                    rank_value = config.get_rank_value(tier, rank, lp)
                     
                     players_data.append({
                         'name': f"{account_info['riot_id']}#{account_info['tagline']}",
@@ -152,7 +152,7 @@ def register_commands(bot):
         )
         
         for i, player in enumerate(players_data, 1):
-            emoji = RANK_EMOJIS.get(player['tier'], "❓")
+            emoji = config.RANK_EMOJIS.get(player['tier'], "❓")
             
             if player['tier'] == 'UNRANKED':
                 rank_str = f"{emoji} **Unranked**"
@@ -199,7 +199,7 @@ def register_commands(bot):
         team1 = members[:team_size]
         team2 = members[team_size:team_size*2]
         
-        roles_pool = ROLES.copy()
+        roles_pool = config.ROLES.copy()
         random.shuffle(roles_pool)
         
         def assign_team(team):
@@ -209,8 +209,8 @@ def register_commands(bot):
                 if available_roles:
                     role = available_roles.pop(0)
                 else:
-                    role = random.choice(ROLES)
-                champion = random.choice(CHAMPIONS)
+                    role = random.choice(config.ROLES)
+                champion = random.choice(config.CHAMPIONS)
                 assignments.append((member, role, champion))
             return assignments
         
@@ -283,7 +283,7 @@ def register_commands(bot):
             losses1 = stats1['losses']
             wr1 = round((wins1 / (wins1 + losses1)) * 100, 1) if (wins1 + losses1) > 0 else 0
             
-            emoji1 = RANK_EMOJIS.get(tier1, "❓")
+            emoji1 = config.RANK_EMOJIS.get(tier1, "❓")
             if tier1 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
                 rank_str1 = f"{emoji1} {tier1.title()} - {lp1} LP"
             else:
@@ -301,7 +301,7 @@ def register_commands(bot):
             losses2 = stats2['losses']
             wr2 = round((wins2 / (wins2 + losses2)) * 100, 1) if (wins2 + losses2) > 0 else 0
 
-            emoji2 = RANK_EMOJIS.get(tier2, "❓")
+            emoji2 = config.RANK_EMOJIS.get(tier2, "❓")
             if tier2 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
                 rank_str2 = f"{emoji2} {tier2.title()} - {lp2} LP"
             else:
@@ -323,8 +323,8 @@ def register_commands(bot):
         )
 
         if stats1 and stats2:
-            rank_val1 = get_rank_value(tier1, rank1, lp1)
-            rank_val2 = get_rank_value(tier2, rank2, lp2)
+            rank_val1 = config.get_rank_value(tier1, rank1, lp1)
+            rank_val2 = config.get_rank_value(tier2, rank2, lp2)
 
             if rank_val1 > rank_val2:
                 winner = f"🏆 {joueur1.mention} est mieux classé !"
