@@ -1,5 +1,5 @@
 import asyncpg
-from config import DATABASE_URL
+import config
 
 class Database:
     def __init__(self):
@@ -7,9 +7,9 @@ class Database:
     
     async def connect(self):
         """Initialise la connexion à la base de données"""
-        if DATABASE_URL:
+        if config.DATABASE_URL:
             try:
-                self.pool = await asyncpg.create_pool(DATABASE_URL)
+                self.pool = await asyncpg.create_pool(config.DATABASE_URL)
                 print("✅ Connecté à PostgreSQL")
                 await self.init_tables()
             except Exception as e:
