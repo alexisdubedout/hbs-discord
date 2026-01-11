@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands, tasks
-import config
+from config import DISCORD_TOKEN, RANK_EMOJIS
 from database import Database
 from riot_api import get_ranked_stats
 from commands import register_commands
@@ -148,8 +148,8 @@ async def check_rank_changes():
                         announcement_channel = guild.text_channels[0] if guild.text_channels else None
 
                     if announcement_channel:
-                        emoji = config.RANK_EMOJIS.get(tier, "❓")
-                        old_emoji = config.RANK_EMOJIS.get(old_tier, "❓")
+                        emoji = RANK_EMOJIS.get(tier, "❓")
+                        old_emoji = RANK_EMOJIS.get(old_tier, "❓")
 
                         if tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
                             rank_str = f"{emoji} **{tier.title()}** - {lp} LP"
@@ -208,4 +208,4 @@ async def check_rank_changes():
             print(f"Erreur check_rank_changes pour {discord_id}: {e}")
 
 if __name__ == "__main__":
-    bot.run(config.DISCORD_TOKEN)
+    bot.run(DISCORD_TOKEN)
