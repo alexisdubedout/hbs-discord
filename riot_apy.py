@@ -1,10 +1,10 @@
 import aiohttp
-from config import RIOT_API_KEY, REGION, PLATFORM
+import config
 
 async def get_summoner_by_riot_id(riot_id: str, tagline: str):
     """Récupère les infos du compte via Riot ID"""
-    url = f"https://{PLATFORM}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{riot_id}/{tagline}"
-    headers = {"X-Riot-Token": RIOT_API_KEY}
+    url = f"https://{config.PLATFORM}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{riot_id}/{tagline}"
+    headers = {"X-Riot-Token": config.RIOT_API_KEY}
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
@@ -14,8 +14,8 @@ async def get_summoner_by_riot_id(riot_id: str, tagline: str):
 
 async def get_summoner_data(puuid: str):
     """Récupère les données du summoner via PUUID"""
-    url = f"https://{REGION}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
-    headers = {"X-Riot-Token": RIOT_API_KEY}
+    url = f"https://{config.REGION}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/{puuid}"
+    headers = {"X-Riot-Token": config.RIOT_API_KEY}
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
@@ -33,8 +33,8 @@ async def get_summoner_data(puuid: str):
 
 async def get_ranked_stats(puuid: str):
     """Récupère les stats ranked du joueur via PUUID"""
-    url = f"https://{REGION}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}"
-    headers = {"X-Riot-Token": RIOT_API_KEY}
+    url = f"https://{config.REGION}.api.riotgames.com/lol/league/v4/entries/by-puuid/{puuid}"
+    headers = {"X-Riot-Token": config.RIOT_API_KEY}
     
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
