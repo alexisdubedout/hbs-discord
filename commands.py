@@ -248,162 +248,6 @@ def register_commands(bot):
         
         await interaction.followup.send(embed=embed)
     
-    @bot.tree.command(name="compare", description="Compare deux joueurs du serveur en détail")
-    @app_commands.describe(
-        joueur1="Premier joueur à comparer",
-        joueur2="Deuxième joueur à comparer"
-    )
-    async def compare(interaction: discord.Interaction, joueur1: discord.Member, joueur2: discord.Member):
-        await interaction.response.defer()
-        
-        account1 = await bot.db.get_linked_account(str(joueur1.id))
-        account2 = await bot.db.get_linked_account(str(joueur2.id))
-        
-        if not account1:
-            await interaction.followup.send(f"❌ {joueur1.mention} n'a pas lié son compte.")
-            return
-        
-        if not account2:
-            await interaction.followup.send(f"❌ {joueur2.mention} n'a pas lié son compte.")
-            return
-        
-        # Récupérer les stats ranked
-        ranked1 = await get_ranked_stats(account1['puuid'])
-        ranked2 = await get_ranked_stats(account2['puuid'])
-        
-        # Récupérer les stats de matchs depuis la DB
-        stats1 = await bot.db.get_player_stats_summary(account1['puuid'])
-        stats2 = await bot.db.get_player_stats_summary(account2['puuid'])
-        
-        embed = discord.Embed(
-            title="⚔️ Comparaison Détaillée",
-            color=discord.Color.purple(),
-            description=f"{joueur1.mention} vs {joueur2.mention}"
-        )
-        
-        # === JOUEUR 1 ===
-        player1_text = f"**{account1['riot_id']}#{account1['tagline']}**\n\n"
-        
-        # Rang
-        if ranked1:
-            tier1 = ranked1['tier']
-            rank1 = ranked1['rank']
-            lp1 = ranked1['leaguePoints']
-            emoji1 = RANK_EMOJIS.get(tier1, "❓")
-            
-            if tier1 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
-                player1_text += f"{emoji1} **{tier1.title()}** - {lp1} LP\n"
-            else:
-                player1_text += f"{emoji1} **{tier1.title()} {rank1}** - {lp1} LP\n"
-        else:
-            player1_text += "❓ **Unranked**\n"
-        
-        player1_text += "\n📊 **Statistiques:**\n"
-        
-        # Stats de games
-        if stats1:
-            player1_text += f"🎮 Games: **{stats1['total_games']}** ({stats1['wins']}W/{stats1['losses']}L)\n"
-            player1_text += f"📈 WR: **{stats1['winrate']}%**\n"
-            player1_text += f"⚔️ KDA: **{stats1['kda']}** ({stats1['avg_kills']}/{stats1['avg_deaths']}/{stats1['avg_assists']})\n"
-            player1_text += f"🌾 CS/min: **{stats1['cs_per_min']}**\n"
-            player1_text += f"👁️ Vision: **{stats1['avg_vision_score']}/game**"
-        else:
-            player1_text += "_Aucune donnée de match disponible_"
-        
-        embed.add_field(
-            name=f"🔵 {joueur1.display_name}",
-            value=player1_text,
-            inline=True
-        )
-        
-        # === JOUEUR 2 ===
-        player2_text = f"**{account2['riot_id']}#{account2['tagline']}**\n\n"
-        
-        # Rang
-        if ranked2:
-            tier2 = ranked2['tier']
-            rank2 = ranked2['rank']
-            lp2 = ranked2['leaguePoints']
-            emoji2 = RANK_EMOJIS.get(tier2, "❓")
-            
-            if tier2 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
-                player2_text += f"{emoji2} **{tier2.title()}** - {lp2} LP\n"
-            else:
-                player2_text += f"{emoji2} **{tier2.title()} {rank2}** - {lp2} LP\n"
-        else:
-            player2_text += "❓ **Unranked**\n"
-        
-        player2_text += "\n📊 **Statistiques:**\n"
-        
-        # Stats de games
-        if stats2:
-            player2_text += f"🎮 Games: **{stats2['total_games']}** ({stats2['wins']}W/{stats2['losses']}L)\n"
-            player2_text += f"📈 WR: **{stats2['winrate']}%**\n"
-            player2_text += f"⚔️ KDA: **{stats2['kda']}** ({stats2['avg_kills']}/{stats2['avg_deaths']}/{stats2['avg_assists']})\n"
-            player2_text += f"🌾 CS/min: **{stats2['cs_per_min']}**\n"
-            player2_text += f"👁️ Vision: **{stats2['avg_vision_score']}/game**"
-        else:
-            player2_text += "_Aucune donnée de match disponible_"
-        
-        embed.add_field(
-            name=f"🔴 {joueur2.display_name}",
-            value=player2_text,
-            inline=True
-        )
-        
-        # === VERDICT ===
-        verdict_lines = []
-        
-        # Comparer le rang
-        if ranked1 and ranked2:
-            rank_val1 = get_rank_value(tier1, rank1, lp1)
-            rank_val2 = get_rank_value(tier2, rank2, lp2)
-            
-            if rank_val1 > rank_val2:
-                verdict_lines.append(f"🏆 Rang: {joueur1.mention}")
-            elif rank_val2 > rank_val1:
-                verdict_lines.append(f"🏆 Rang: {joueur2.mention}")
-            else:
-                verdict_lines.append("🏆 Rang: Égalité")
-        
-        # Comparer les stats si disponibles
-        if stats1 and stats2:
-            # WR
-            if stats1['winrate'] > stats2['winrate']:
-                verdict_lines.append(f"📈 Meilleur WR: {joueur1.mention} ({stats1['winrate']}%)")
-            elif stats2['winrate'] > stats1['winrate']:
-                verdict_lines.append(f"📈 Meilleur WR: {joueur2.mention} ({stats2['winrate']}%)")
-            
-            # KDA
-            if stats1['kda'] > stats2['kda']:
-                verdict_lines.append(f"⚔️ Meilleur KDA: {joueur1.mention} ({stats1['kda']})")
-            elif stats2['kda'] > stats1['kda']:
-                verdict_lines.append(f"⚔️ Meilleur KDA: {joueur2.mention} ({stats2['kda']})")
-            
-            # CS/min
-            if stats1['cs_per_min'] > stats2['cs_per_min']:
-                verdict_lines.append(f"🌾 Meilleur CS: {joueur1.mention} ({stats1['cs_per_min']}/min)")
-            elif stats2['cs_per_min'] > stats1['cs_per_min']:
-                verdict_lines.append(f"🌾 Meilleur CS: {joueur2.mention} ({stats2['cs_per_min']}/min)")
-            
-            # Vision
-            if stats1['avg_vision_score'] > stats2['avg_vision_score']:
-                verdict_lines.append(f"👁️ Meilleure Vision: {joueur1.mention} ({stats1['avg_vision_score']})")
-            elif stats2['avg_vision_score'] > stats1['avg_vision_score']:
-                verdict_lines.append(f"👁️ Meilleure Vision: {joueur2.mention} ({stats2['avg_vision_score']})")
-        
-        if verdict_lines:
-            embed.add_field(
-                name="🎯 Verdict",
-                value="\n".join(verdict_lines),
-                inline=False
-            )
-        
-        embed.set_footer(text="Stats basées sur tous les modes de jeu cette saison")
-        embed.timestamp = discord.utils.utcnow()
-        
-        await interaction.followup.send(embed=embed)
-    
     @bot.tree.command(name="stats", description="Affiche les statistiques détaillées d'un joueur")
     @app_commands.describe(
         joueur="Le joueur dont tu veux voir les stats (laisse vide pour toi-même)"
@@ -577,6 +421,162 @@ def register_commands(bot):
             )
         
         embed.set_footer(text="Stats basées sur tous les modes de jeu • Synchronisation toutes les 30 min")
+        embed.timestamp = discord.utils.utcnow()
+        
+        await interaction.followup.send(embed=embed)
+    
+    @bot.tree.command(name="compare", description="Compare deux joueurs du serveur en détail")
+    @app_commands.describe(
+        joueur1="Premier joueur à comparer",
+        joueur2="Deuxième joueur à comparer"
+    )
+    async def compare(interaction: discord.Interaction, joueur1: discord.Member, joueur2: discord.Member):
+        await interaction.response.defer()
+        
+        account1 = await bot.db.get_linked_account(str(joueur1.id))
+        account2 = await bot.db.get_linked_account(str(joueur2.id))
+        
+        if not account1:
+            await interaction.followup.send(f"❌ {joueur1.mention} n'a pas lié son compte.")
+            return
+        
+        if not account2:
+            await interaction.followup.send(f"❌ {joueur2.mention} n'a pas lié son compte.")
+            return
+        
+        # Récupérer les stats ranked
+        ranked1 = await get_ranked_stats(account1['puuid'])
+        ranked2 = await get_ranked_stats(account2['puuid'])
+        
+        # Récupérer les stats de matchs depuis la DB
+        stats1 = await bot.db.get_player_stats_summary(account1['puuid'])
+        stats2 = await bot.db.get_player_stats_summary(account2['puuid'])
+        
+        embed = discord.Embed(
+            title="⚔️ Comparaison Détaillée",
+            color=discord.Color.purple(),
+            description=f"{joueur1.mention} vs {joueur2.mention}"
+        )
+        
+        # === JOUEUR 1 ===
+        player1_text = f"**{account1['riot_id']}#{account1['tagline']}**\n\n"
+        
+        # Rang
+        if ranked1:
+            tier1 = ranked1['tier']
+            rank1 = ranked1['rank']
+            lp1 = ranked1['leaguePoints']
+            emoji1 = RANK_EMOJIS.get(tier1, "❓")
+            
+            if tier1 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+                player1_text += f"{emoji1} **{tier1.title()}** - {lp1} LP\n"
+            else:
+                player1_text += f"{emoji1} **{tier1.title()} {rank1}** - {lp1} LP\n"
+        else:
+            player1_text += "❓ **Unranked**\n"
+        
+        player1_text += "\n📊 **Statistiques:**\n"
+        
+        # Stats de games
+        if stats1:
+            player1_text += f"🎮 Games: **{stats1['total_games']}** ({stats1['wins']}W/{stats1['losses']}L)\n"
+            player1_text += f"📈 WR: **{stats1['winrate']}%**\n"
+            player1_text += f"⚔️ KDA: **{stats1['kda']}** ({stats1['avg_kills']}/{stats1['avg_deaths']}/{stats1['avg_assists']})\n"
+            player1_text += f"🌾 CS/min: **{stats1['cs_per_min']}**\n"
+            player1_text += f"👁️ Vision: **{stats1['avg_vision_score']}/game**"
+        else:
+            player1_text += "_Aucune donnée de match disponible_"
+        
+        embed.add_field(
+            name=f"🔵 {joueur1.display_name}",
+            value=player1_text,
+            inline=True
+        )
+        
+        # === JOUEUR 2 ===
+        player2_text = f"**{account2['riot_id']}#{account2['tagline']}**\n\n"
+        
+        # Rang
+        if ranked2:
+            tier2 = ranked2['tier']
+            rank2 = ranked2['rank']
+            lp2 = ranked2['leaguePoints']
+            emoji2 = RANK_EMOJIS.get(tier2, "❓")
+            
+            if tier2 in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+                player2_text += f"{emoji2} **{tier2.title()}** - {lp2} LP\n"
+            else:
+                player2_text += f"{emoji2} **{tier2.title()} {rank2}** - {lp2} LP\n"
+        else:
+            player2_text += "❓ **Unranked**\n"
+        
+        player2_text += "\n📊 **Statistiques:**\n"
+        
+        # Stats de games
+        if stats2:
+            player2_text += f"🎮 Games: **{stats2['total_games']}** ({stats2['wins']}W/{stats2['losses']}L)\n"
+            player2_text += f"📈 WR: **{stats2['winrate']}%**\n"
+            player2_text += f"⚔️ KDA: **{stats2['kda']}** ({stats2['avg_kills']}/{stats2['avg_deaths']}/{stats2['avg_assists']})\n"
+            player2_text += f"🌾 CS/min: **{stats2['cs_per_min']}**\n"
+            player2_text += f"👁️ Vision: **{stats2['avg_vision_score']}/game**"
+        else:
+            player2_text += "_Aucune donnée de match disponible_"
+        
+        embed.add_field(
+            name=f"🔴 {joueur2.display_name}",
+            value=player2_text,
+            inline=True
+        )
+        
+        # === VERDICT ===
+        verdict_lines = []
+        
+        # Comparer le rang
+        if ranked1 and ranked2:
+            rank_val1 = get_rank_value(tier1, rank1, lp1)
+            rank_val2 = get_rank_value(tier2, rank2, lp2)
+            
+            if rank_val1 > rank_val2:
+                verdict_lines.append(f"🏆 Rang: {joueur1.mention}")
+            elif rank_val2 > rank_val1:
+                verdict_lines.append(f"🏆 Rang: {joueur2.mention}")
+            else:
+                verdict_lines.append("🏆 Rang: Égalité")
+        
+        # Comparer les stats si disponibles
+        if stats1 and stats2:
+            # WR
+            if stats1['winrate'] > stats2['winrate']:
+                verdict_lines.append(f"📈 Meilleur WR: {joueur1.mention} ({stats1['winrate']}%)")
+            elif stats2['winrate'] > stats1['winrate']:
+                verdict_lines.append(f"📈 Meilleur WR: {joueur2.mention} ({stats2['winrate']}%)")
+            
+            # KDA
+            if stats1['kda'] > stats2['kda']:
+                verdict_lines.append(f"⚔️ Meilleur KDA: {joueur1.mention} ({stats1['kda']})")
+            elif stats2['kda'] > stats1['kda']:
+                verdict_lines.append(f"⚔️ Meilleur KDA: {joueur2.mention} ({stats2['kda']})")
+            
+            # CS/min
+            if stats1['cs_per_min'] > stats2['cs_per_min']:
+                verdict_lines.append(f"🌾 Meilleur CS: {joueur1.mention} ({stats1['cs_per_min']}/min)")
+            elif stats2['cs_per_min'] > stats1['cs_per_min']:
+                verdict_lines.append(f"🌾 Meilleur CS: {joueur2.mention} ({stats2['cs_per_min']}/min)")
+            
+            # Vision
+            if stats1['avg_vision_score'] > stats2['avg_vision_score']:
+                verdict_lines.append(f"👁️ Meilleure Vision: {joueur1.mention} ({stats1['avg_vision_score']})")
+            elif stats2['avg_vision_score'] > stats1['avg_vision_score']:
+                verdict_lines.append(f"👁️ Meilleure Vision: {joueur2.mention} ({stats2['avg_vision_score']})")
+        
+        if verdict_lines:
+            embed.add_field(
+                name="🎯 Verdict",
+                value="\n".join(verdict_lines),
+                inline=False
+            )
+        
+        embed.set_footer(text="Stats basées sur tous les modes de jeu cette saison")
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
