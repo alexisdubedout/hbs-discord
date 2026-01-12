@@ -2,8 +2,9 @@ import discord
 from discord.ext import commands, tasks
 from config import DISCORD_TOKEN, RANK_EMOJIS
 from database import Database
-from riot_api import get_ranked_stats
+from riot_api import get_ranked_stats, get_match_list, get_match_details, extract_player_stats
 from commands import register_commands
+import asyncio
 
 class LoLBot(commands.Bot):
     def __init__(self):
@@ -69,6 +70,9 @@ async def on_ready():
 
     if not check_rank_changes.is_running():
         check_rank_changes.start()
+    
+    if not sync_match_history.is_running():
+        sync_match_history.start()
 
 @bot.event
 async def on_message(message):
@@ -206,6 +210,59 @@ async def check_rank_changes():
 
         except Exception as e:
             print(f"Erreur check_rank_changes pour {discord_id}: {e}")
+
+@tasks.loop(minutes=30)
+async def sync_match_history():
+    """Synchronise l'historique des matchs toutes les 30 minutes"""
+    if not bot.db.pool:
+        return
+    
+    print("🔄 Synchronisation des matchs en cours...")
+    linked_accounts = await bot.db.get_all_linked_accounts()
+    
+    total_new_matches = 0
+    
+    for discord_id, account_info in linked_accounts.items():
+        try:
+            puuid = account_info['puuid']
+            
+            # Récupérer les 5 derniers matchs
+            match_ids = await get_match_list(puuid, count=5)
+            
+            if not match_ids:
+                continue
+            
+            for match_id in match_ids:
+                # Vérifier si ce match existe déjà pour ce joueur
+                if await bot.db.match_exists(match_id, puuid):
+                    continue
+                
+                # Petit délai pour éviter le rate limit
+                await asyncio.sleep(0.5)
+                
+                # Récupérer les détails du match
+                match_data = await get_match_details(match_id)
+                
+                if not match_data:
+                    continue
+                
+                # Extraire les stats du joueur
+                stats = extract_player_stats(match_data, puuid)
+                
+                if stats:
+                    await bot.db.save_match_stats(match_id, puuid, stats)
+                    total_new_matches += 1
+            
+            # Petit délai entre chaque joueur
+            await asyncio.sleep(1)
+            
+        except Exception as e:
+            print(f"Erreur sync_match_history pour {discord_id}: {e}")
+    
+    if total_new_matches > 0:
+        print(f"✅ {total_new_matches} nouveaux matchs enregistrés")
+    else:
+        print("✅ Aucun nouveau match")
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
