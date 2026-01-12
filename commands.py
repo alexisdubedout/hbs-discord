@@ -403,3 +403,180 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+    
+    @bot.tree.command(name="stats", description="Affiche les statistiques détaillées d'un joueur")
+    @app_commands.describe(
+        joueur="Le joueur dont tu veux voir les stats (laisse vide pour toi-même)"
+    )
+    async def stats(interaction: discord.Interaction, joueur: discord.Member = None):
+        await interaction.response.defer()
+        
+        # Si aucun joueur spécifié, utiliser l'auteur de la commande
+        target_user = joueur if joueur else interaction.user
+        user_id = str(target_user.id)
+        
+        account = await bot.db.get_linked_account(user_id)
+        
+        if not account:
+            if target_user == interaction.user:
+                await interaction.followup.send("❌ Tu n'as pas lié ton compte. Utilise `/link` pour le faire !")
+            else:
+                await interaction.followup.send(f"❌ {target_user.mention} n'a pas lié son compte.")
+            return
+        
+        # Récupérer les stats ranked
+        ranked_stats = await get_ranked_stats(account['puuid'])
+        
+        # Récupérer les stats de matchs
+        match_stats = await bot.db.get_player_stats_summary(account['puuid'])
+        all_matches = await bot.db.get_player_stats(account['puuid'])
+        
+        # Créer l'embed
+        embed = discord.Embed(
+            title=f"📊 Statistiques de {target_user.display_name}",
+            color=discord.Color.blue(),
+            description=f"**{account['riot_id']}#{account['tagline']}**"
+        )
+        
+        # Ajouter la photo de profil Discord
+        embed.set_thumbnail(url=target_user.display_avatar.url)
+        
+        # === RANG RANKED ===
+        if ranked_stats:
+            tier = ranked_stats['tier']
+            rank = ranked_stats['rank']
+            lp = ranked_stats['leaguePoints']
+            wins = ranked_stats['wins']
+            losses = ranked_stats['losses']
+            total = wins + losses
+            wr = round((wins / total) * 100, 1) if total > 0 else 0
+            
+            emoji = RANK_EMOJIS.get(tier, "❓")
+            
+            if tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+                rank_text = f"{emoji} **{tier.title()}** - {lp} LP"
+            else:
+                rank_text = f"{emoji} **{tier.title()} {rank}** - {lp} LP"
+            
+            rank_text += f"\n`{wins}W {losses}L - {wr}% WR`"
+            
+            embed.add_field(
+                name="🏆 Rang Ranked Solo/Duo",
+                value=rank_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🏆 Rang Ranked Solo/Duo",
+                value="❓ **Unranked**\n`Aucune game ranked cette saison`",
+                inline=False
+            )
+        
+        # === STATS GÉNÉRALES (TOUS MODES) ===
+        if match_stats and match_stats['total_games'] > 0:
+            general_text = f"🎮 **Games jouées:** {match_stats['total_games']}\n"
+            general_text += f"✅ **Victoires:** {match_stats['wins']} ({match_stats['winrate']}%)\n"
+            general_text += f"❌ **Défaites:** {match_stats['losses']}\n"
+            
+            embed.add_field(
+                name="📈 Statistiques Générales",
+                value=general_text,
+                inline=True
+            )
+            
+            # === STATS DE PERFORMANCE ===
+            perf_text = f"⚔️ **KDA:** {match_stats['kda']}\n"
+            perf_text += f"🗡️ **Kills/game:** {match_stats['avg_kills']}\n"
+            perf_text += f"💀 **Deaths/game:** {match_stats['avg_deaths']}\n"
+            perf_text += f"🤝 **Assists/game:** {match_stats['avg_assists']}\n"
+            
+            embed.add_field(
+                name="⚔️ Performance en Combat",
+                value=perf_text,
+                inline=True
+            )
+            
+            # === FARMING & VISION ===
+            farm_text = f"🌾 **CS/min:** {match_stats['cs_per_min']}\n"
+            farm_text += f"👁️ **Vision/game:** {match_stats['avg_vision_score']}\n"
+            
+            embed.add_field(
+                name="🌾 Farm & Vision",
+                value=farm_text,
+                inline=True
+            )
+            
+            # === CHAMPIONS LES PLUS JOUÉS ===
+            if all_matches:
+                # Compter les champions
+                champion_counts = {}
+                champion_stats = {}
+                
+                for match in all_matches:
+                    champ = match['champion']
+                    if champ not in champion_counts:
+                        champion_counts[champ] = 0
+                        champion_stats[champ] = {'wins': 0, 'total': 0}
+                    
+                    champion_counts[champ] += 1
+                    champion_stats[champ]['total'] += 1
+                    if match['win']:
+                        champion_stats[champ]['wins'] += 1
+                
+                # Top 5 champions
+                top_champions = sorted(champion_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+                
+                if top_champions:
+                    champ_text = ""
+                    for champ, count in top_champions:
+                        wr = round((champion_stats[champ]['wins'] / champion_stats[champ]['total']) * 100, 1)
+                        champ_text += f"**{champ}**: {count} games ({wr}% WR)\n"
+                    
+                    embed.add_field(
+                        name="🎭 Top Champions",
+                        value=champ_text,
+                        inline=False
+                    )
+            
+            # === SÉRIES ===
+            if len(all_matches) >= 5:
+                # Calculer la série actuelle (5 dernières games)
+                recent_5 = all_matches[:5]
+                recent_wins = sum(1 for m in recent_5 if m['win'])
+                recent_losses = 5 - recent_wins
+                
+                # Calculer la série (streak)
+                streak = 0
+                streak_type = None
+                for match in all_matches:
+                    if streak_type is None:
+                        streak_type = "win" if match['win'] else "loss"
+                        streak = 1
+                    elif (streak_type == "win" and match['win']) or (streak_type == "loss" and not match['win']):
+                        streak += 1
+                    else:
+                        break
+                
+                if streak_type == "win":
+                    streak_text = f"🔥 **{streak} victoires d'affilée !**\n"
+                else:
+                    streak_text = f"💔 **{streak} défaites d'affilée...**\n"
+                
+                streak_text += f"\n📅 **5 dernières games:** {recent_wins}W - {recent_losses}L"
+                
+                embed.add_field(
+                    name="📊 Forme Récente",
+                    value=streak_text,
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="📊 Statistiques",
+                value="Aucune donnée de match disponible.\nJoue quelques games et attends la prochaine synchronisation !",
+                inline=False
+            )
+        
+        embed.set_footer(text="Stats basées sur tous les modes de jeu • Synchronisation toutes les 30 min")
+        embed.timestamp = discord.utils.utcnow()
+        
+        await interaction.followup.send(embed=embed)
