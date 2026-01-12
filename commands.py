@@ -330,9 +330,9 @@ def register_commands(bot):
             
             # === STATS DE PERFORMANCE ===
             perf_text = f"⚔️ **KDA:** {match_stats['kda']}\n"
-            perf_text += f"🗡️ **Kills:** {match_stats['kills']}\n"
-            perf_text += f"💀 **Deaths:** {match_stats['deaths']}\n"
-            perf_text += f"🤝 **Assists:** {match_stats['aassists']}\n"
+            perf_text += f"🗡️ **Kills/game:** {match_stats['avg_kills']}\n"
+            perf_text += f"💀 **Deaths/game:** {match_stats['avg_deaths']}\n"
+            perf_text += f"🤝 **Assists/game:** {match_stats['avg_assists']}\n"
             
             embed.add_field(
                 name="⚔️ Performance en Combat",
@@ -580,4 +580,5 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+
 
