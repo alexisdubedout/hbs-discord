@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from config import DISCORD_TOKEN, RANK_EMOJIS
 from database import Database
-from riot_api import get_ranked_stats, get_match_list, get_match_details, extract_player_stats, is_current_season
+from riot_api import get_ranked_stats, get_match_list, get_match_details, extract_player_stats
 from commands import register_commands
 import asyncio
 
@@ -123,28 +123,21 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
                     print(f"  └─ ❌ Erreur get_match_details: {e}")
                     continue
                 
-                # Extraire les stats
+                # Extraire les stats (la vérification de saison se fait DANS extract_player_stats maintenant)
                 print(f"  └─ Extraction des stats...")
                 try:
                     stats = extract_player_stats(match_data, puuid)
+                    
+                    # Si stats est None, c'est que le match est trop ancien (avant le 8 janvier 2025)
                     if not stats:
-                        print(f"  └─ ❌ Stats non extraites")
-                        continue
-                    print(f"  └─ ✅ Stats extraites: {stats.get('champion', '?')}")
-                except Exception as e:
-                    print(f"  └─ ❌ Erreur extract_player_stats: {e}")
-                    continue
-                
-                # Vérifier si c'est de la saison en cours
-                print(f"  └─ Vérification saison...")
-                try:
-                    if not is_current_season(stats['game_date']):
-                        print(f"  └─ 📅 Match de saison précédente, ARRÊT")
+                        print(f"  └─ ⏭️  Match ignoré (ancienne saison ou erreur)")
                         found_old_season = True
                         break
-                    print(f"  └─ ✅ Saison actuelle")
+                    
+                    print(f"  └─ ✅ Stats extraites: {stats.get('champion', '?')}")
+                    
                 except Exception as e:
-                    print(f"  └─ ❌ Erreur is_current_season: {e}")
+                    print(f"  └─ ❌ Erreur extract_player_stats: {e}")
                     continue
                 
                 # Sauvegarder
@@ -425,3 +418,4 @@ async def sync_match_history():
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
