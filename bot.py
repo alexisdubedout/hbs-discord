@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 from config import DISCORD_TOKEN, RANK_EMOJIS
 from database import Database
 from riot_api import get_ranked_stats, get_match_list, get_match_details, extract_player_stats
-from commands import register_commands
 import asyncio
 
 class LoLBot(commands.Bot):
@@ -20,6 +19,8 @@ class LoLBot(commands.Bot):
     
     async def setup_hook(self):
         await self.db.connect()
+        # IMPORTANT: Importer commands APRÈS que le bot soit initialisé
+        from commands import register_commands
         register_commands(self)
 
 bot = LoLBot()
@@ -33,6 +34,11 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         print(f"⚠️ Sync déjà en cours pour {riot_id}")
         return 0
     
+    # VÉRIFIER LA CONNEXION DB AU DÉBUT - CRITIQUE!
+    if not bot.db or not bot.db.pool:
+        print(f"❌ Database non initialisée pour {riot_id}!")
+        return 0
+    
     bot.syncing_players.add(puuid)
     
     try:
@@ -43,9 +49,10 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         
         print(f"\n{'='*70}")
         print(f"🔄 SYNC START: {riot_id}")
+        print(f"✅ Pool DB OK: {bot.db.pool is not None}")
         print(f"{'='*70}")
         
-        while total_checked < 1000:  # Limite de sécurité
+        while total_checked < 1000:
             print(f"\n📦 BATCH {start_index // batch_size + 1} - Offset: {start_index}")
             
             if progress_callback:
@@ -80,15 +87,15 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
             for idx, match_id in enumerate(match_ids, 1):
                 print(f"\n  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
                 
-                # Vérifier si déjà en DB (IDENTIQUE à sync_match_history)
+                # Vérifier si déjà en DB
                 if await bot.db.match_exists(match_id, puuid):
                     print(f"  └─ ⏭️  Déjà en DB, skip")
                     continue
                 
-                # Délai pour respecter rate limit (IDENTIQUE à sync_match_history)
+                # Délai pour respecter rate limit
                 await asyncio.sleep(0.5)
                 
-                # Récupérer les détails (IDENTIQUE à sync_match_history)
+                # Récupérer les détails
                 match_data = await get_match_details(match_id)
                 
                 if not match_data:
@@ -97,23 +104,24 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
                 
                 print(f"  └─ ✅ Données récupérées")
                 
-                # Extraire les stats (IDENTIQUE à sync_match_history)
+                # Extraire les stats
                 stats = extract_player_stats(match_data, puuid)
                 
                 # Si stats est None, c'est soit une erreur, soit un match avant le 8 janvier 2026
                 if not stats:
                     print(f"  └─ ⏭️  Stats non extraites (ancienne saison ou erreur)")
-                    # On considère qu'on a atteint l'ancienne saison, on arrête ce joueur
                     found_old_season = True
                     break
                 
-                # Sauvegarder (IDENTIQUE à sync_match_history - SANS timeout)
+                # Sauvegarder - IDENTIQUE à sync_match_history
                 try:
                     await bot.db.save_match_stats(match_id, puuid, stats)
                     new_matches += 1
                     print(f"  └─ ✅ SAUVEGARDÉ - {stats['champion']} ({new_matches} total)")
                 except Exception as e:
                     print(f"  └─ ❌ Erreur save_match_stats: {e}")
+                    import traceback
+                    traceback.print_exc()
                     continue
                 
                 # Callback de progression tous les 10 matchs
@@ -200,6 +208,8 @@ async def send_link_reminder(user: discord.Member):
 @bot.event
 async def on_ready():
     print(f"{bot.user} est connecté !")
+    print(f"✅ Database pool: {bot.db.pool is not None}")
+    
     try:
         synced = await bot.tree.sync()
         print(f"Synchronisé {len(synced)} commandes")
@@ -335,6 +345,7 @@ async def check_rank_changes():
 async def sync_match_history():
     """Synchronise l'historique des matchs toutes les 30 minutes (5 derniers matchs)"""
     if not bot.db.pool:
+        print("⚠️ Pool DB non disponible pour sync_match_history")
         return
     
     print("🔄 Synchronisation rapide des matchs en cours...")
@@ -383,5 +394,3 @@ async def sync_match_history():
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
-
-
