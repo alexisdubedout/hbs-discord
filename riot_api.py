@@ -85,15 +85,15 @@ def extract_player_stats(match_data: dict, puuid: str):
         game_timestamp_ms = match_data['info']['gameCreation']
         game_date = datetime.fromtimestamp(game_timestamp_ms / 1000)
         
-        # Date de début de saison (8 janvier 2025)
-        season_start = datetime(2025, 1, 8, 0, 0, 0)
+        # Date de début de saison (8 janvier 2026)
+        season_start = datetime(2026, 1, 8, 0, 0, 0)
         
         # Debug
         print(f"  └─ 📅 Timestamp: {game_timestamp_ms} -> Date: {game_date.strftime('%Y-%m-%d %H:%M')}")
         
         # Vérifier si le match est de la saison actuelle AVANT de continuer
         if game_date < season_start:
-            print(f"  └─ ⏭️  Match avant le 8 janvier 2025, ignoré")
+            print(f"  └─ ⏭️  Match avant le 8 janvier 2026, ignoré")
             return None
         
         # Trouver le participant correspondant au PUUID
@@ -127,4 +127,5 @@ def extract_player_stats(match_data: dict, puuid: str):
         import traceback
         traceback.print_exc()
         return None
+
 
