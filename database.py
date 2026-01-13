@@ -71,6 +71,10 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_match_stats_game_date 
                 ON match_stats(game_date DESC)
             ''')
+            await conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_match_stats_queue 
+                ON match_stats(queue_id)
+            ''')
             print("✅ Tables de base de données créées")
     
     async def get_linked_account(self, discord_id: str):
@@ -202,46 +206,121 @@ class Database:
             )
         return True
     
-    async def get_player_stats(self, puuid: str):
-        """Récupère toutes les stats d'un joueur"""
+    async def get_player_stats(self, puuid: str, queue_filter: str = None):
+        """Récupère toutes les stats d'un joueur avec filtre optionnel"""
         if not self.pool:
             return []
+        
+        # Map des filtres vers les queue IDs
+        queue_map = {
+            'ranked': [420],  # Ranked Solo/Duo
+            'flex': [440],    # Ranked Flex
+            'normal': [400, 430],  # Normal Draft + Blind
+            'aram': [450]     # ARAM
+        }
+        
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(
-                'SELECT * FROM match_stats WHERE puuid = $1 ORDER BY game_date DESC',
-                puuid
-            )
+            if queue_filter and queue_filter in queue_map:
+                queue_ids = queue_map[queue_filter]
+                placeholders = ','.join(f'${i+2}' for i in range(len(queue_ids)))
+                query = f'SELECT * FROM match_stats WHERE puuid = $1 AND queue_id IN ({placeholders}) ORDER BY game_date DESC'
+                rows = await conn.fetch(query, puuid, *queue_ids)
+            else:
+                rows = await conn.fetch(
+                    'SELECT * FROM match_stats WHERE puuid = $1 ORDER BY game_date DESC',
+                    puuid
+                )
             return [dict(row) for row in rows]
     
-    async def get_player_stats_summary(self, puuid: str):
-        """Calcule un résumé des stats d'un joueur"""
+    async def get_player_stats_summary(self, puuid: str, queue_filter: str = None):
+        """Calcule un résumé des stats d'un joueur avec filtre optionnel"""
         if not self.pool:
             return None
+        
+        # Map des filtres vers les queue IDs
+        queue_map = {
+            'ranked': [420],
+            'flex': [440],
+            'normal': [400, 430],
+            'aram': [450]
+        }
+        
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow('''
+            # Requête de base
+            base_query = '''
                 SELECT 
                     COUNT(*) as total_games,
                     SUM(CASE WHEN win THEN 1 ELSE 0 END) as wins,
-                    AVG(kills) as avg_kills,
-                    AVG(deaths) as avg_deaths,
-                    AVG(assists) as avg_assists,
+                    SUM(kills) as total_kills,
+                    SUM(deaths) as total_deaths,
+                    SUM(assists) as total_assists
+                FROM match_stats 
+                WHERE puuid = $1
+            '''
+            
+            # Requête pour CS et Vision (exclure ARAM)
+            cs_vision_query = '''
+                SELECT 
                     AVG(CAST(cs AS FLOAT) / (game_duration / 60.0)) as cs_per_min,
                     AVG(vision_score) as avg_vision_score
                 FROM match_stats 
-                WHERE puuid = $1
-            ''', puuid)
+                WHERE puuid = $1 AND queue_id != 450
+            '''
+            
+            # Ajouter le filtre si nécessaire
+            if queue_filter and queue_filter in queue_map:
+                queue_ids = queue_map[queue_filter]
+                placeholders = ','.join(f'${i+2}' for i in range(len(queue_ids)))
+                base_query += f' AND queue_id IN ({placeholders})'
+                
+                # Pour CS/Vision, on ajoute aussi le filtre mais on garde l'exclusion ARAM
+                if queue_filter == 'aram':
+                    # Si on filtre sur ARAM, on ne calcule pas CS/Vision
+                    cs_vision_query = None
+                else:
+                    cs_vision_query += f' AND queue_id IN ({placeholders})'
+                
+                row = await conn.fetchrow(base_query, puuid, *queue_ids)
+                if cs_vision_query:
+                    cs_vision_row = await conn.fetchrow(cs_vision_query, puuid, *queue_ids)
+                else:
+                    cs_vision_row = None
+            else:
+                row = await conn.fetchrow(base_query, puuid)
+                cs_vision_row = await conn.fetchrow(cs_vision_query, puuid)
             
             if row and row['total_games'] > 0:
-                return {
+                total_deaths = row['total_deaths'] if row['total_deaths'] > 0 else 1
+                
+                result = {
                     'total_games': row['total_games'],
                     'wins': row['wins'],
                     'losses': row['total_games'] - row['wins'],
                     'winrate': round((row['wins'] / row['total_games']) * 100, 1),
-                    'avg_kills': round(row['avg_kills'], 1),
-                    'avg_deaths': round(row['avg_deaths'], 1),
-                    'avg_assists': round(row['avg_assists'], 1),
-                    'kda': round((row['avg_kills'] + row['avg_assists']) / max(row['avg_deaths'], 1), 2),
-                    'cs_per_min': round(row['cs_per_min'], 1),
-                    'avg_vision_score': round(row['avg_vision_score'], 1)
+                    'total_kills': row['total_kills'],
+                    'total_deaths': row['total_deaths'],
+                    'total_assists': row['total_assists'],
+                    'kda': round((row['total_kills'] + row['total_assists']) / total_deaths, 2)
                 }
+                
+                # Ajouter CS et Vision si disponibles
+                if cs_vision_row and cs_vision_row['cs_per_min']:
+                    result['cs_per_min'] = round(cs_vision_row['cs_per_min'], 1)
+                    result['avg_vision_score'] = round(cs_vision_row['avg_vision_score'], 1)
+                else:
+                    result['cs_per_min'] = None
+                    result['avg_vision_score'] = None
+                
+                return result
             return None
+    
+    async def get_match_count(self, puuid: str):
+        """Compte le nombre de matchs stockés pour un joueur"""
+        if not self.pool:
+            return 0
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                'SELECT COUNT(*) as count FROM match_stats WHERE puuid = $1',
+                puuid
+            )
+            return row['count'] if row else 0
