@@ -318,7 +318,7 @@ async def check_rank_changes():
 
 @tasks.loop(minutes=30)
 async def sync_match_history():
-    """Synchronise l'historique des 5 derniers matchs toutes les 30 minutes"""
+    """Synchronise l'historique des 5 derniers matchs toutes les 30 minutes et envoie le meilleur milestone en DM"""
     if not bot.db.pool:
         print("⚠️ Pool DB non disponible pour sync_match_history")
         return
@@ -337,17 +337,48 @@ async def sync_match_history():
             if not match_ids:
                 continue
             
+            # Récupérer le membre Discord pour le DM
+            member = None
+            for guild in bot.guilds:
+                member = guild.get_member(int(discord_id))
+                if member:
+                    break
+            
             for match_id in match_ids:
                 if await bot.db.match_exists(match_id, puuid):
                     continue
+                
                 await asyncio.sleep(0.5)
                 match_data = await get_match_details(match_id)
                 if not match_data:
                     continue
+                
                 stats = extract_player_stats(match_data, puuid)
                 if stats:
                     await bot.db.save_match_stats(match_id, puuid, stats)
                     total_new_matches += 1
+                    
+                    # === CHECK MILESTONE ET ENVOI DM ===
+                    if member:
+                        milestone = await bot.db.check_and_save_milestone(puuid, stats)
+                        if milestone:
+                            try:
+                                embed = discord.Embed(
+                                    title="🏆 Nouveau Milestone !",
+                                    description=f"Félicitations {member.display_name} !\n"
+                                                f"Tu as atteint un nouveau record personnel : **{milestone['name']}**",
+                                    color=discord.Color.green()
+                                )
+                                embed.add_field(name="Détail", value=f"{milestone['value']} {milestone.get('unit', '')}", inline=False)
+                                embed.set_footer(text="Ce message est automatique • Seul ton meilleur milestone est envoyé")
+                                embed.timestamp = discord.utils.utcnow()
+                                
+                                await member.send(embed=embed)
+                            except discord.Forbidden:
+                                print(f"Impossible de DM {member.display_name}")
+                            except Exception as e:
+                                print(f"Erreur en DM milestone pour {member.display_name}: {e}")
+            
             await asyncio.sleep(1)
         except Exception as e:
             print(f"Erreur sync_match_history pour {discord_id}: {e}")
@@ -360,3 +391,4 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
