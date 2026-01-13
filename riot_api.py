@@ -123,9 +123,28 @@ def extract_player_stats(match_data: dict, puuid: str):
         print(f"Erreur extraction stats: {e}")
         return None
 
-def is_current_season(game_date: datetime) -> bool:
-    """Vérifie si un match appartient à la saison en cours (2025)"""
-    # La saison 2025 a commencé le 10 janvier 2025
-    season_start = datetime(2025, 1, 10)
-    return game_date >= season_start
+def is_current_season(game_date) -> bool:
+    """
+    Vérifie si un match appartient à la saison en cours (2025)
+    Split 1 2025 a commencé le 8 janvier 2025
+    """
+    # Date de début de la saison 2025 (8 janvier 2025 à minuit)
+    season_start = datetime(2025, 1, 8, 0, 0, 0)
+    
+    # Si c'est un timestamp (int), le convertir en datetime
+    if isinstance(game_date, int):
+        # Timestamp en millisecondes
+        if game_date > 10000000000:
+            game_date = datetime.fromtimestamp(game_date / 1000)
+        # Timestamp en secondes
+        else:
+            game_date = datetime.fromtimestamp(game_date)
+    
+    # Comparer les dates
+    is_current = game_date >= season_start
+    
+    # Debug pour voir ce qui se passe
+    print(f"  └─ 📅 Date du match: {game_date.strftime('%Y-%m-%d %H:%M')} | Saison actuelle: {is_current}")
+    
+    return is_current
 
