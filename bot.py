@@ -27,18 +27,25 @@ bot = LoLBot()
 
 async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
     """
-    Récupère l'historique complet des matchs d'un joueur jusqu'au 8 janvier 2026
-    Comportement identique à sync_match_history mais pour tous les matchs de la saison
+    Récupère l'historique complet des matchs d'un joueur jusqu'au 8 janvier 2026.
+    Sécurisé : attend que le bot soit ready et reconnecte la DB si nécessaire.
     """
+    # === ATTENDRE QUE LE BOT SOIT READY ===
+    await bot.wait_until_ready()
+
+    # Vérifier la DB et reconnecter si besoin
+    if not bot.db or not bot.db.pool:
+        print(f"⚠️ Pool DB non initialisé pour {riot_id}, tentative de reconnexion...")
+        await bot.db.connect()
+        if not bot.db.pool:
+            print(f"❌ Impossible de connecter la DB pour {riot_id}. Abort.")
+            return 0
+
+    # Vérifier si déjà en sync
     if puuid in bot.syncing_players:
         print(f"⚠️ Sync déjà en cours pour {riot_id}")
         return 0
-    
-    # VÉRIFIER LA CONNEXION DB AU DÉBUT - CRITIQUE!
-    if not bot.db or not bot.db.pool:
-        print(f"❌ Database non initialisée pour {riot_id}!")
-        return 0
-    
+
     bot.syncing_players.add(puuid)
     
     try:
@@ -46,126 +53,100 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         start_index = 0
         batch_size = 100
         total_checked = 0
-        
+
         print(f"\n{'='*70}")
         print(f"🔄 SYNC START: {riot_id}")
         print(f"✅ Pool DB OK: {bot.db.pool is not None}")
         print(f"{'='*70}")
-        
-        while total_checked < 1000:
+
+        while True:
             print(f"\n📦 BATCH {start_index // batch_size + 1} - Offset: {start_index}")
-            
+
             if progress_callback:
-                try:
-                    await progress_callback(
-                        f"🔍 Analyse en cours...\n"
-                        f"📊 {total_checked} matchs vérifiés\n"
-                        f"✅ {new_matches} nouveaux matchs enregistrés"
-                    )
-                except Exception as e:
-                    print(f"⚠️ Erreur callback: {e}")
-            
-            # Récupérer un batch de matchs
-            print(f"🌐 Appel API get_match_list...")
-            try:
-                match_ids = await get_match_list(puuid, start=start_index, count=batch_size)
-                print(f"✅ API Response: {len(match_ids) if match_ids else 0} matchs")
-            except Exception as e:
-                print(f"❌ ERREUR get_match_list: {e}")
-                break
-            
+                await progress_callback(
+                    f"🔍 Analyse en cours...\n"
+                    f"📊 {total_checked} matchs vérifiés\n"
+                    f"✅ {new_matches} nouveaux matchs enregistrés"
+                )
+
+            # Récupérer batch de matchs
+            match_ids = await get_match_list(puuid, start=start_index, count=batch_size)
             if not match_ids:
-                print(f"✅ Fin de l'historique (aucun match trouvé)")
+                print("✅ Fin de l'historique (aucun match trouvé)")
                 break
-            
+
             total_checked += len(match_ids)
             print(f"📊 Total vérifié: {total_checked} matchs")
-            
-            # Parcourir chaque match du batch
+
             found_old_season = False
-            
+
             for idx, match_id in enumerate(match_ids, 1):
-                print(f"\n  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
-                
-                # Vérifier si déjà en DB
+                print(f"  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
+
+                # Déjà en DB ?
                 if await bot.db.match_exists(match_id, puuid):
-                    print(f"  └─ ⏭️  Déjà en DB, skip")
+                    print("  └─ ⏭️ Déjà en DB, skip")
                     continue
-                
-                # Délai pour respecter rate limit
+
+                # Pause pour rate limit
                 await asyncio.sleep(0.5)
-                
-                # Récupérer les détails
+
                 match_data = await get_match_details(match_id)
-                
                 if not match_data:
-                    print(f"  └─ ❌ Pas de données")
+                    print("  └─ ❌ Pas de données")
                     continue
-                
-                print(f"  └─ ✅ Données récupérées")
-                
-                # Extraire les stats
+
                 stats = extract_player_stats(match_data, puuid)
-                
-                # Si stats est None, c'est soit une erreur, soit un match avant le 8 janvier 2026
                 if not stats:
-                    print(f"  └─ ⏭️  Stats non extraites (ancienne saison ou erreur)")
+                    print("  └─ ⏭️ Stats non extraites (ancienne saison ou erreur)")
                     found_old_season = True
                     break
-                
-                # Sauvegarder - IDENTIQUE à sync_match_history
+
+                # Sauvegarder
                 try:
                     await bot.db.save_match_stats(match_id, puuid, stats)
                     new_matches += 1
                     print(f"  └─ ✅ SAUVEGARDÉ - {stats['champion']} ({new_matches} total)")
                 except Exception as e:
                     print(f"  └─ ❌ Erreur save_match_stats: {e}")
-                    import traceback
-                    traceback.print_exc()
                     continue
-                
-                # Callback de progression tous les 10 matchs
-                if new_matches > 0 and new_matches % 10 == 0 and progress_callback:
-                    try:
-                        await progress_callback(
-                            f"🔍 Analyse en cours...\n"
-                            f"📊 {total_checked} matchs vérifiés\n"
-                            f"✅ {new_matches} nouveaux matchs enregistrés"
-                        )
-                    except:
-                        pass
-            
-            # Si on a trouvé un match de l'ancienne saison, on arrête
+
+                # Callback tous les 10 matchs
+                if new_matches % 10 == 0 and progress_callback:
+                    await progress_callback(
+                        f"🔍 Analyse en cours...\n"
+                        f"📊 {total_checked} matchs vérifiés\n"
+                        f"✅ {new_matches} nouveaux matchs enregistrés"
+                    )
+
+            # Stop si match d'ancienne saison
             if found_old_season:
-                print(f"\n🛑 Arrêt: match avant le 8 janvier 2026 trouvé")
+                print("🛑 Arrêt: match avant le 8 janvier 2026 trouvé")
                 break
-            
-            # Si on a eu moins de matchs que demandé, c'est qu'on est à la fin
+
+            # Stop si batch incomplet
             if len(match_ids) < batch_size:
-                print(f"\n✅ Fin de l'historique (batch incomplet: {len(match_ids)}/{batch_size})")
+                print(f"✅ Fin de l'historique (batch incomplet: {len(match_ids)}/{batch_size})")
                 break
-            
-            # Passer au batch suivant
+
             start_index += batch_size
-            print(f"\n⏱️  Pause de 2s avant le prochain batch...")
+            print("⏱️ Pause 2s avant prochain batch...")
             await asyncio.sleep(2)
-        
+
         print(f"\n{'='*70}")
         print(f"✅ SYNC TERMINÉ: {riot_id}")
         print(f"📊 Total vérifié: {total_checked} matchs")
         print(f"✅ Nouveaux matchs: {new_matches}")
         print(f"{'='*70}\n")
-        
         return new_matches
-        
+
     except Exception as e:
         print(f"\n{'='*70}")
-        print(f"❌ SYNC ÉCHOUÉ: {riot_id}")
-        print(f"❌ ERREUR GLOBALE: {e}")
-        print(f"{'='*70}\n")
+        print(f"❌ SYNC ÉCHOUÉ: {riot_id} - {e}")
         import traceback
         traceback.print_exc()
         return 0
+
     finally:
         bot.syncing_players.discard(puuid)
 
@@ -394,3 +375,4 @@ async def sync_match_history():
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
