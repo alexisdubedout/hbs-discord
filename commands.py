@@ -135,7 +135,6 @@ def register_commands(bot):
         
         total_new_matches = 0
         completed = 0
-        errors = []
         
         for discord_id, account_info in linked_accounts.items():
             try:
@@ -148,56 +147,33 @@ def register_commands(bot):
                 
                 await interaction.edit_original_response(
                     content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                            f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)...\n"
-                            f"⏱️ Cela peut prendre 1-2 minutes par joueur..."
+                            f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
                 )
                 
-                # Sync complète avec timeout de 10 minutes par joueur
-                try:
-                    new_matches = await asyncio.wait_for(
-                        sync_player_full_history(puuid, f"{riot_id}#{tagline}"),
-                        timeout=600  # 10 minutes max par joueur
-                    )
-                    total_new_matches += new_matches
-                    completed += 1
-                    
-                    await interaction.edit_original_response(
-                        content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                                f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
-                                f"📊 Total: {total_new_matches} nouveaux matchs"
-                    )
-                except asyncio.TimeoutError:
-                    errors.append(f"{riot_id}#{tagline} - Timeout (>5min)")
-                    print(f"❌ TIMEOUT pour {riot_id}#{tagline}")
-                    completed += 1
+                # Sync complète
+                new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
+                total_new_matches += new_matches
+                completed += 1
                 
-                # Délai entre chaque joueur pour éviter le rate limit
-                await asyncio.sleep(3)
+                await interaction.edit_original_response(
+                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
+                            f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
+                            f"📊 Total: {total_new_matches} nouveaux matchs"
+                )
+                
+                # Petit délai entre chaque joueur
+                await asyncio.sleep(2)
                 
             except Exception as e:
-                error_msg = f"{account_info.get('riot_id', 'Unknown')} - {str(e)[:50]}"
-                errors.append(error_msg)
-                print(f"❌ Erreur sync pour {discord_id}: {e}")
-                import traceback
-                traceback.print_exc()
-                completed += 1
+                print(f"Erreur sync pour {discord_id}: {e}")
                 continue
         
-        # Message final
-        final_message = f"✅ **Synchronisation terminée !**\n\n"
-        final_message += f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
-        final_message += f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
-        
-        if errors:
-            final_message += f"\n⚠️ **Erreurs ({len(errors)}):**\n"
-            for error in errors[:5]:  # Max 5 erreurs affichées
-                final_message += f"• {error}\n"
-            if len(errors) > 5:
-                final_message += f"• ... et {len(errors) - 5} autres\n"
-        else:
-            final_message += f"🎉 Toutes les stats sont maintenant à jour !"
-        
-        await interaction.edit_original_response(content=final_message)
+        await interaction.edit_original_response(
+            content=f"✅ **Synchronisation terminée !**\n\n"
+                    f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
+                    f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
+                    f"🎉 Toutes les stats sont maintenant à jour !"
+        )
     
     @bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
     async def leaderboard(interaction: discord.Interaction):
@@ -623,9 +599,13 @@ def register_commands(bot):
         if stats1:
             player1_text += f"🎮 Games: **{stats1['total_games']}** ({stats1['wins']}W/{stats1['losses']}L)\n"
             player1_text += f"📈 WR: **{stats1['winrate']}%**\n"
-            player1_text += f"⚔️ KDA: **{stats1['kda']}** ({stats1['avg_kills']}/{stats1['avg_deaths']}/{stats1['avg_assists']})\n"
-            player1_text += f"🌾 CS/min: **{stats1['cs_per_min']}**\n"
-            player1_text += f"👁️ Vision: **{stats1['avg_vision_score']}/game**"
+            player1_text += f"⚔️ KDA: **{stats1['kda']}**\n"
+            
+            # CS et Vision seulement si disponibles (pas ARAM)
+            if stats1.get('cs_per_min'):
+                player1_text += f"🌾 CS/min: **{stats1['cs_per_min']}**\n"
+            if stats1.get('avg_vision_score'):
+                player1_text += f"👁️ Vision: **{stats1['avg_vision_score']}/game**"
         else:
             player1_text += "_Aucune donnée de match disponible_"
         
@@ -658,9 +638,13 @@ def register_commands(bot):
         if stats2:
             player2_text += f"🎮 Games: **{stats2['total_games']}** ({stats2['wins']}W/{stats2['losses']}L)\n"
             player2_text += f"📈 WR: **{stats2['winrate']}%**\n"
-            player2_text += f"⚔️ KDA: **{stats2['kda']}** ({stats2['avg_kills']}/{stats2['avg_deaths']}/{stats2['avg_assists']})\n"
-            player2_text += f"🌾 CS/min: **{stats2['cs_per_min']}**\n"
-            player2_text += f"👁️ Vision: **{stats2['avg_vision_score']}/game**"
+            player2_text += f"⚔️ KDA: **{stats2['kda']}**\n"
+            
+            # CS et Vision seulement si disponibles (pas ARAM)
+            if stats2.get('cs_per_min'):
+                player2_text += f"🌾 CS/min: **{stats2['cs_per_min']}**\n"
+            if stats2.get('avg_vision_score'):
+                player2_text += f"👁️ Vision: **{stats2['avg_vision_score']}/game**"
         else:
             player2_text += "_Aucune donnée de match disponible_"
         
@@ -699,17 +683,19 @@ def register_commands(bot):
             elif stats2['kda'] > stats1['kda']:
                 verdict_lines.append(f"⚔️ Meilleur KDA: {joueur2.mention} ({stats2['kda']})")
             
-            # CS/min
-            if stats1['cs_per_min'] > stats2['cs_per_min']:
-                verdict_lines.append(f"🌾 Meilleur CS: {joueur1.mention} ({stats1['cs_per_min']}/min)")
-            elif stats2['cs_per_min'] > stats1['cs_per_min']:
-                verdict_lines.append(f"🌾 Meilleur CS: {joueur2.mention} ({stats2['cs_per_min']}/min)")
+            # CS/min (seulement si les deux ont des données)
+            if stats1.get('cs_per_min') and stats2.get('cs_per_min'):
+                if stats1['cs_per_min'] > stats2['cs_per_min']:
+                    verdict_lines.append(f"🌾 Meilleur CS: {joueur1.mention} ({stats1['cs_per_min']}/min)")
+                elif stats2['cs_per_min'] > stats1['cs_per_min']:
+                    verdict_lines.append(f"🌾 Meilleur CS: {joueur2.mention} ({stats2['cs_per_min']}/min)")
             
-            # Vision
-            if stats1['avg_vision_score'] > stats2['avg_vision_score']:
-                verdict_lines.append(f"👁️ Meilleure Vision: {joueur1.mention} ({stats1['avg_vision_score']})")
-            elif stats2['avg_vision_score'] > stats1['avg_vision_score']:
-                verdict_lines.append(f"👁️ Meilleure Vision: {joueur2.mention} ({stats2['avg_vision_score']})")
+            # Vision (seulement si les deux ont des données)
+            if stats1.get('avg_vision_score') and stats2.get('avg_vision_score'):
+                if stats1['avg_vision_score'] > stats2['avg_vision_score']:
+                    verdict_lines.append(f"👁️ Meilleure Vision: {joueur1.mention} ({stats1['avg_vision_score']})")
+                elif stats2['avg_vision_score'] > stats1['avg_vision_score']:
+                    verdict_lines.append(f"👁️ Meilleure Vision: {joueur2.mention} ({stats2['avg_vision_score']})")
         
         if verdict_lines:
             embed.add_field(
@@ -722,5 +708,3 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
-
-
