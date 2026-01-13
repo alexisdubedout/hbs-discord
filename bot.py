@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands, tasks
 from config import DISCORD_TOKEN, RANK_EMOJIS
 from database import Database
-from riot_api import get_ranked_stats, get_match_list, get_match_details, extract_player_stats
+from riot_api import get_ranked_stats, get_match_list, get_match_details, extract_player_stats, is_current_season
 from commands import register_commands
 import asyncio
 
@@ -16,12 +16,104 @@ class LoLBot(commands.Bot):
         
         super().__init__(command_prefix="!", intents=intents)
         self.db = Database()
+        self.syncing_players = set()  # Track players currently syncing
     
     async def setup_hook(self):
         await self.db.connect()
         register_commands(self)
 
 bot = LoLBot()
+
+async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
+    """
+    Récupère l'historique complet des matchs d'un joueur pour la saison en cours
+    Retourne le nombre de nouveaux matchs ajoutés
+    """
+    if puuid in bot.syncing_players:
+        print(f"⚠️ Sync déjà en cours pour {riot_id}")
+        return 0
+    
+    bot.syncing_players.add(puuid)
+    
+    try:
+        new_matches = 0
+        start_index = 0
+        batch_size = 100
+        total_checked = 0
+        
+        print(f"🔄 Début sync complète pour {riot_id}...")
+        
+        while total_checked < 1000:  # Limite de sécurité
+            # Récupérer un batch de matchs
+            match_ids = await get_match_list(puuid, start=start_index, count=batch_size)
+            
+            if not match_ids:
+                print(f"✅ Fin de l'historique pour {riot_id} (aucun match trouvé)")
+                break
+            
+            total_checked += len(match_ids)
+            
+            if progress_callback:
+                await progress_callback(f"🔍 Vérification des matchs {start_index} à {start_index + len(match_ids)}...")
+            
+            # Parcourir chaque match du batch
+            found_old_season = False
+            for match_id in match_ids:
+                # Vérifier si déjà en DB
+                if await bot.db.match_exists(match_id, puuid):
+                    continue
+                
+                # Petit délai pour respecter les limites API
+                await asyncio.sleep(0.6)
+                
+                # Récupérer les détails
+                match_data = await get_match_details(match_id)
+                
+                if not match_data:
+                    continue
+                
+                # Extraire les stats
+                stats = extract_player_stats(match_data, puuid)
+                
+                if not stats:
+                    continue
+                
+                # Vérifier si c'est de la saison en cours
+                if not is_current_season(stats['game_date']):
+                    print(f"📅 Match de saison précédente trouvé pour {riot_id}, arrêt de la sync")
+                    found_old_season = True
+                    break
+                
+                # Sauvegarder
+                await bot.db.save_match_stats(match_id, puuid, stats)
+                new_matches += 1
+                
+                if new_matches % 10 == 0 and progress_callback:
+                    await progress_callback(f"💾 {new_matches} nouveaux matchs enregistrés...")
+            
+            # Si on a trouvé un match de l'ancienne saison, on arrête
+            if found_old_season:
+                break
+            
+            # Si on a eu moins de matchs que demandé, c'est qu'on est à la fin
+            if len(match_ids) < batch_size:
+                print(f"✅ Fin de l'historique pour {riot_id} (batch incomplet)")
+                break
+            
+            # Passer au batch suivant
+            start_index += batch_size
+            
+            # Délai entre les batchs
+            await asyncio.sleep(2)
+        
+        print(f"✅ Sync complète terminée pour {riot_id}: {new_matches} nouveaux matchs")
+        return new_matches
+        
+    except Exception as e:
+        print(f"❌ Erreur lors de la sync complète pour {riot_id}: {e}")
+        return 0
+    finally:
+        bot.syncing_players.discard(puuid)
 
 async def send_link_reminder(user: discord.Member):
     """Envoie un DM de rappel pour lier le compte"""
@@ -213,11 +305,11 @@ async def check_rank_changes():
 
 @tasks.loop(minutes=30)
 async def sync_match_history():
-    """Synchronise l'historique des matchs toutes les 30 minutes"""
+    """Synchronise l'historique des matchs toutes les 30 minutes (5 derniers matchs)"""
     if not bot.db.pool:
         return
     
-    print("🔄 Synchronisation des matchs en cours...")
+    print("🔄 Synchronisation rapide des matchs en cours...")
     linked_accounts = await bot.db.get_all_linked_accounts()
     
     total_new_matches = 0
@@ -226,8 +318,12 @@ async def sync_match_history():
         try:
             puuid = account_info['puuid']
             
+            # Ne pas synchroniser si une sync complète est en cours
+            if puuid in bot.syncing_players:
+                continue
+            
             # Récupérer les 5 derniers matchs
-            match_ids = await get_match_list(puuid, count=5)
+            match_ids = await get_match_list(puuid, start=0, count=5)
             
             if not match_ids:
                 continue
