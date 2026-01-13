@@ -365,15 +365,16 @@ class Database:
 
 # === FONCTIONS POUR MILESTONES ===
 
-async def check_and_save_milestone(self, puuid: str, milestone_type: str, current_value: int, extra_data: str = None):
-    """
-    Vérifie si un milestone a été atteint et le sauvegarde si nouveau
-    Retourne le palier atteint si nouveau, None sinon
-    """
+async def check_and_save_milestone(
+    self,
+    puuid: str,
+    milestone_type: str,
+    current_value: int,
+    extra_data: str = None
+):
     if not self.pool:
         return None
-    
-    # Paliers disponibles par type
+
     THRESHOLDS = {
         'deaths': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
         'kills': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
@@ -384,37 +385,46 @@ async def check_and_save_milestone(self, puuid: str, milestone_type: str, curren
         'lose_streak': [5, 10, 15, 20],
         'champion_games': [25, 50, 100, 200, 300]
     }
-    
+
     thresholds = THRESHOLDS.get(milestone_type, [])
-    
-    # Trouver le plus grand palier atteint
-    reached_threshold = None
-    for threshold in thresholds:
-        if current_value >= threshold:
-            reached_threshold = threshold
-        else:
-            break
-    
-    if not reached_threshold:
+    if not thresholds:
         return None
-    
+
+    # 🥇 plus haut palier atteignable
+    reached_threshold = max(
+        (t for t in thresholds if current_value >= t),
+        default=None
+    )
+
+    if reached_threshold is None:
+        return None
+
     async with self.pool.acquire() as conn:
-        # Vérifier si ce milestone existe déjà
-        exists = await conn.fetchrow('''
-            SELECT 1 FROM milestones 
-            WHERE puuid = $1 AND milestone_type = $2 AND milestone_value = $3 
-            AND ($4::TEXT IS NULL OR extra_data = $4)
-        ''', puuid, milestone_type, reached_threshold, extra_data)
-        
-        if exists:
+        # 🔎 dernier milestone enregistré
+        last_saved = await conn.fetchval(
+            '''
+            SELECT MAX(milestone_value)
+            FROM milestones
+            WHERE puuid = $1 AND milestone_type = $2
+            AND ($3::TEXT IS NULL OR extra_data = $3)
+            ''',
+            puuid, milestone_type, extra_data
+        )
+
+        # 🚫 déjà au même niveau ou plus haut → rien à faire
+        if last_saved is not None and reached_threshold <= last_saved:
             return None
-        
-        # Sauvegarder le nouveau milestone
-        await conn.execute('''
+
+        # 💾 sauvegarde uniquement le meilleur
+        await conn.execute(
+            '''
             INSERT INTO milestones (puuid, milestone_type, milestone_value, extra_data)
             VALUES ($1, $2, $3, $4)
-        ''', puuid, milestone_type, reached_threshold, extra_data)
-        
+            ON CONFLICT DO NOTHING
+            ''',
+            puuid, milestone_type, reached_threshold, extra_data
+        )
+
         return reached_threshold
 
 async def get_current_streak(self, puuid: str):
@@ -467,6 +477,7 @@ async def get_champion_stats(self, puuid: str):
         ''', puuid)
         
         return {row['champion']: row['game_count'] for row in rows}
+
 
 
 
