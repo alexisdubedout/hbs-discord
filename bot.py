@@ -16,7 +16,7 @@ class LoLBot(commands.Bot):
         
         super().__init__(command_prefix="!", intents=intents)
         self.db = Database()
-        self.syncing_players = set()  # Track players currently syncing
+        self.syncing_players = set()
     
     async def setup_hook(self):
         await self.db.connect()
@@ -27,7 +27,6 @@ bot = LoLBot()
 async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
     """
     Récupère l'historique complet des matchs d'un joueur pour la saison en cours
-    Retourne le nombre de nouveaux matchs ajoutés
     """
     if puuid in bot.syncing_players:
         print(f"⚠️ Sync déjà en cours pour {riot_id}")
@@ -41,76 +40,165 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         batch_size = 100
         total_checked = 0
         
-        print(f"🔄 Début sync complète pour {riot_id}...")
+        print(f"\n{'='*70}")
+        print(f"🔄 SYNC START: {riot_id}")
+        print(f"{'='*70}")
         
         while total_checked < 1000:  # Limite de sécurité
+            print(f"\n📦 BATCH {start_index // batch_size + 1} - Offset: {start_index}")
+            
+            if progress_callback:
+                try:
+                    await progress_callback(
+                        f"🔍 Analyse en cours...\n"
+                        f"📊 {total_checked} matchs vérifiés\n"
+                        f"✅ {new_matches} nouveaux matchs enregistrés"
+                    )
+                except Exception as e:
+                    print(f"⚠️ Erreur callback: {e}")
+            
             # Récupérer un batch de matchs
-            match_ids = await get_match_list(puuid, start=start_index, count=batch_size)
+            print(f"🌐 Appel API get_match_list...")
+            try:
+                match_ids = await asyncio.wait_for(
+                    get_match_list(puuid, start=start_index, count=batch_size),
+                    timeout=30
+                )
+                print(f"✅ API Response: {len(match_ids) if match_ids else 0} matchs")
+            except asyncio.TimeoutError:
+                print(f"❌ TIMEOUT sur get_match_list après 30s")
+                break
+            except Exception as e:
+                print(f"❌ ERREUR get_match_list: {e}")
+                break
             
             if not match_ids:
-                print(f"✅ Fin de l'historique pour {riot_id} (aucun match trouvé)")
+                print(f"✅ Fin de l'historique (aucun match trouvé)")
                 break
             
             total_checked += len(match_ids)
-            
-            if progress_callback:
-                await progress_callback(f"🔍 Vérification des matchs {start_index} à {start_index + len(match_ids)}...")
+            print(f"📊 Total vérifié: {total_checked} matchs")
             
             # Parcourir chaque match du batch
             found_old_season = False
-            for match_id in match_ids:
+            for idx, match_id in enumerate(match_ids, 1):
+                print(f"\n  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
+                
                 # Vérifier si déjà en DB
-                if await bot.db.match_exists(match_id, puuid):
+                print(f"  └─ Vérification DB...")
+                try:
+                    exists = await asyncio.wait_for(
+                        bot.db.match_exists(match_id, puuid),
+                        timeout=5
+                    )
+                    if exists:
+                        print(f"  └─ ⏭️  Déjà en DB, skip")
+                        continue
+                    print(f"  └─ ✅ Nouveau match, récupération...")
+                except asyncio.TimeoutError:
+                    print(f"  └─ ❌ TIMEOUT sur match_exists")
+                    continue
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur match_exists: {e}")
                     continue
                 
-                # Petit délai pour respecter les limites API
+                # Délai pour respecter rate limit
                 await asyncio.sleep(0.6)
                 
                 # Récupérer les détails
-                match_data = await get_match_details(match_id)
-                
-                if not match_data:
+                print(f"  └─ Appel API get_match_details...")
+                try:
+                    match_data = await asyncio.wait_for(
+                        get_match_details(match_id),
+                        timeout=10
+                    )
+                    if not match_data:
+                        print(f"  └─ ❌ Pas de données")
+                        continue
+                    print(f"  └─ ✅ Données récupérées")
+                except asyncio.TimeoutError:
+                    print(f"  └─ ❌ TIMEOUT sur get_match_details")
+                    continue
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur get_match_details: {e}")
                     continue
                 
                 # Extraire les stats
-                stats = extract_player_stats(match_data, puuid)
-                
-                if not stats:
+                print(f"  └─ Extraction des stats...")
+                try:
+                    stats = extract_player_stats(match_data, puuid)
+                    if not stats:
+                        print(f"  └─ ❌ Stats non extraites")
+                        continue
+                    print(f"  └─ ✅ Stats extraites: {stats.get('champion', '?')}")
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur extract_player_stats: {e}")
                     continue
                 
                 # Vérifier si c'est de la saison en cours
-                if not is_current_season(stats['game_date']):
-                    print(f"📅 Match de saison précédente trouvé pour {riot_id}, arrêt de la sync")
-                    found_old_season = True
-                    break
+                print(f"  └─ Vérification saison...")
+                try:
+                    if not is_current_season(stats['game_date']):
+                        print(f"  └─ 📅 Match de saison précédente, ARRÊT")
+                        found_old_season = True
+                        break
+                    print(f"  └─ ✅ Saison actuelle")
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur is_current_season: {e}")
+                    continue
                 
                 # Sauvegarder
-                await bot.db.save_match_stats(match_id, puuid, stats)
-                new_matches += 1
+                print(f"  └─ Sauvegarde en DB...")
+                try:
+                    await asyncio.wait_for(
+                        bot.db.save_match_stats(match_id, puuid, stats),
+                        timeout=5
+                    )
+                    new_matches += 1
+                    print(f"  └─ ✅ SAUVEGARDÉ ({new_matches} total)")
+                except asyncio.TimeoutError:
+                    print(f"  └─ ❌ TIMEOUT sur save_match_stats")
+                    continue
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur save_match_stats: {e}")
+                    continue
                 
                 if new_matches % 10 == 0 and progress_callback:
-                    await progress_callback(f"💾 {new_matches} nouveaux matchs enregistrés...")
+                    try:
+                        await progress_callback(f"💾 {new_matches} nouveaux matchs enregistrés...")
+                    except:
+                        pass
             
             # Si on a trouvé un match de l'ancienne saison, on arrête
             if found_old_season:
+                print(f"\n🛑 Arrêt: match d'ancienne saison trouvé")
                 break
             
             # Si on a eu moins de matchs que demandé, c'est qu'on est à la fin
             if len(match_ids) < batch_size:
-                print(f"✅ Fin de l'historique pour {riot_id} (batch incomplet)")
+                print(f"\n✅ Fin de l'historique (batch incomplet: {len(match_ids)}/{batch_size})")
                 break
             
             # Passer au batch suivant
             start_index += batch_size
-            
-            # Délai entre les batchs
+            print(f"\n⏱️  Pause de 2s avant le prochain batch...")
             await asyncio.sleep(2)
         
-        print(f"✅ Sync complète terminée pour {riot_id}: {new_matches} nouveaux matchs")
+        print(f"\n{'='*70}")
+        print(f"✅ SYNC TERMINÉ: {riot_id}")
+        print(f"📊 Total vérifié: {total_checked} matchs")
+        print(f"✅ Nouveaux matchs: {new_matches}")
+        print(f"{'='*70}\n")
+        
         return new_matches
         
     except Exception as e:
-        print(f"❌ Erreur lors de la sync complète pour {riot_id}: {e}")
+        print(f"\n{'='*70}")
+        print(f"❌ SYNC ÉCHOUÉ: {riot_id}")
+        print(f"❌ ERREUR GLOBALE: {e}")
+        print(f"{'='*70}\n")
+        import traceback
+        traceback.print_exc()
         return 0
     finally:
         bot.syncing_players.discard(puuid)
@@ -211,7 +299,6 @@ async def check_rank_changes():
 
             last_rank = await bot.db.get_last_rank(discord_id)
 
-            # Premier enregistrement
             if not last_rank:
                 await bot.db.save_rank(discord_id, tier, rank, lp)
                 continue
@@ -220,26 +307,22 @@ async def check_rank_changes():
             old_rank = last_rank['rank']
             old_lp = last_rank['lp']
 
-            # Vérifier si changement de pallier (tier)
             tier_changed = old_tier != tier
 
             if tier_changed:
                 await bot.db.save_rank(discord_id, tier, rank, lp)
 
-                # Trouver le salon "général" ou similaire
                 for guild in bot.guilds:
                     member = guild.get_member(int(discord_id))
                     if not member:
                         continue
 
-                    # Chercher un salon d'annonces
                     announcement_channel = None
                     for channel in guild.text_channels:
                         if channel.name.lower() in ['général', 'general', 'annonces', 'announcements', 'lobby', 'tchat']:
                             announcement_channel = channel
                             break
                     
-                    # Si aucun salon trouvé, utiliser le premier salon textuel disponible
                     if not announcement_channel:
                         announcement_channel = guild.text_channels[0] if guild.text_channels else None
 
@@ -257,7 +340,6 @@ async def check_rank_changes():
                         else:
                             old_rank_str = f"{old_emoji} {old_tier.title()} {old_rank}"
 
-                        # Déterminer si c'est une montée ou une descente
                         tier_values = {
                             "IRON": 0, "BRONZE": 1, "SILVER": 2, "GOLD": 3,
                             "PLATINUM": 4, "EMERALD": 5, "DIAMOND": 6,
@@ -272,21 +354,9 @@ async def check_rank_changes():
                             description=f"{member.mention} a changé de pallier !"
                         )
                         
-                        embed.add_field(
-                            name="Ancien rang",
-                            value=old_rank_str,
-                            inline=True
-                        )
-                        embed.add_field(
-                            name="➡️",
-                            value="",
-                            inline=True
-                        )
-                        embed.add_field(
-                            name="Nouveau rang",
-                            value=rank_str,
-                            inline=True
-                        )
+                        embed.add_field(name="Ancien rang", value=old_rank_str, inline=True)
+                        embed.add_field(name="➡️", value="", inline=True)
+                        embed.add_field(name="Nouveau rang", value=rank_str, inline=True)
 
                         if is_promotion:
                             embed.set_footer(text="Félicitations ! 🎉")
@@ -318,38 +388,31 @@ async def sync_match_history():
         try:
             puuid = account_info['puuid']
             
-            # Ne pas synchroniser si une sync complète est en cours
             if puuid in bot.syncing_players:
                 continue
             
-            # Récupérer les 5 derniers matchs
             match_ids = await get_match_list(puuid, start=0, count=5)
             
             if not match_ids:
                 continue
             
             for match_id in match_ids:
-                # Vérifier si ce match existe déjà pour ce joueur
                 if await bot.db.match_exists(match_id, puuid):
                     continue
                 
-                # Petit délai pour éviter le rate limit
                 await asyncio.sleep(0.5)
                 
-                # Récupérer les détails du match
                 match_data = await get_match_details(match_id)
                 
                 if not match_data:
                     continue
                 
-                # Extraire les stats du joueur
                 stats = extract_player_stats(match_data, puuid)
                 
                 if stats:
                     await bot.db.save_match_stats(match_id, puuid, stats)
                     total_new_matches += 1
             
-            # Petit délai entre chaque joueur
             await asyncio.sleep(1)
             
         except Exception as e:
