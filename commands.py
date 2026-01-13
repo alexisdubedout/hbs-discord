@@ -111,47 +111,53 @@ def register_commands(bot):
         else:
             await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
     
-    @bot.tree.command(name="sync_all_history", description="[ADMIN] Récupère l'historique complet de tous les joueurs liés")
-    async def sync_all_history(interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
-            return
-        
-        await interaction.response.defer()
-        
-        linked_accounts = await bot.db.get_all_linked_accounts()
-        
-        if not linked_accounts:
-            await interaction.followup.send("❌ Aucun compte lié.")
-            return
-        
-        await interaction.followup.send(
-            f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
-            f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
-        )
-        
-        from bot import sync_player_full_history
-        import asyncio
-        
-        total_new_matches = 0
-        completed = 0
-        
-        for discord_id, account_info in linked_accounts.items():
+@bot.tree.command(name="sync_all_history", description="[ADMIN] Récupère l'historique complet de tous les joueurs liés")
+async def sync_all_history(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+        return
+    
+    await interaction.response.defer()
+    
+    linked_accounts = await bot.db.get_all_linked_accounts()
+    
+    if not linked_accounts:
+        await interaction.followup.send("❌ Aucun compte lié.")
+        return
+    
+    await interaction.followup.send(
+        f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
+        f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
+    )
+    
+    from bot import sync_player_full_history
+    import asyncio
+    
+    total_new_matches = 0
+    completed = 0
+    errors = []
+    
+    for discord_id, account_info in linked_accounts.items():
+        try:
+            puuid = account_info['puuid']
+            riot_id = account_info['riot_id']
+            tagline = account_info['tagline']
+            
+            # Vérifier combien de matchs sont déjà en DB
+            existing_count = await bot.db.get_match_count(puuid)
+            
+            await interaction.edit_original_response(
+                content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
+                        f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)...\n"
+                        f"⏱️ Cela peut prendre 1-2 minutes par joueur..."
+            )
+            
+            # Sync complète avec timeout de 10 minutes par joueur
             try:
-                puuid = account_info['puuid']
-                riot_id = account_info['riot_id']
-                tagline = account_info['tagline']
-                
-                # Vérifier combien de matchs sont déjà en DB
-                existing_count = await bot.db.get_match_count(puuid)
-                
-                await interaction.edit_original_response(
-                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                            f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
+                new_matches = await asyncio.wait_for(
+                    sync_player_full_history(puuid, f"{riot_id}#{tagline}"),
+                    timeout=600  # 10 minutes max par joueur
                 )
-                
-                # Sync complète
-                new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
                 total_new_matches += new_matches
                 completed += 1
                 
@@ -160,20 +166,38 @@ def register_commands(bot):
                             f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
                             f"📊 Total: {total_new_matches} nouveaux matchs"
                 )
-                
-                # Petit délai entre chaque joueur
-                await asyncio.sleep(2)
-                
-            except Exception as e:
-                print(f"Erreur sync pour {discord_id}: {e}")
-                continue
-        
-        await interaction.edit_original_response(
-            content=f"✅ **Synchronisation terminée !**\n\n"
-                    f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
-                    f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
-                    f"🎉 Toutes les stats sont maintenant à jour !"
-        )
+            except asyncio.TimeoutError:
+                errors.append(f"{riot_id}#{tagline} - Timeout (>5min)")
+                print(f"❌ TIMEOUT pour {riot_id}#{tagline}")
+                completed += 1
+            
+            # Délai entre chaque joueur pour éviter le rate limit
+            await asyncio.sleep(3)
+            
+        except Exception as e:
+            error_msg = f"{account_info.get('riot_id', 'Unknown')} - {str(e)[:50]}"
+            errors.append(error_msg)
+            print(f"❌ Erreur sync pour {discord_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            completed += 1
+            continue
+    
+    # Message final
+    final_message = f"✅ **Synchronisation terminée !**\n\n"
+    final_message += f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
+    final_message += f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
+    
+    if errors:
+        final_message += f"\n⚠️ **Erreurs ({len(errors)}):**\n"
+        for error in errors[:5]:  # Max 5 erreurs affichées
+            final_message += f"• {error}\n"
+        if len(errors) > 5:
+            final_message += f"• ... et {len(errors) - 5} autres\n"
+    else:
+        final_message += f"🎉 Toutes les stats sont maintenant à jour !"
+    
+    await interaction.edit_original_response(content=final_message)
     
     @bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
     async def leaderboard(interaction: discord.Interaction):
@@ -698,3 +722,4 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+
