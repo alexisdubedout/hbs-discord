@@ -28,7 +28,7 @@ bot = LoLBot()
 # === FULL HISTORY SYNC ===
 async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
     """
-    Récupère l'historique complet des matchs d'un joueur jusqu'au 8 janvier 2026
+    Récupère l'historique complet des matchs d'un joueur pour la saison en cours
     """
     if puuid in bot.syncing_players:
         print(f"⚠️ Sync déjà en cours pour {riot_id}")
@@ -84,23 +84,35 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
             for idx, match_id in enumerate(match_ids, 1):
                 print(f"\n  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
                 
-                if await bot.db.match_exists(match_id, puuid):
-                    print(f"  └─ ⏭️  Déjà en DB, skip")
+                try:
+                    if await bot.db.match_exists(match_id, puuid):
+                        print(f"  └─ ⏭️  Déjà en DB, skip")
+                        continue
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur match_exists: {e}")
                     continue
                 
                 await asyncio.sleep(0.5)
                 
-                match_data = await get_match_details(match_id)
-                
-                if not match_data:
-                    print(f"  └─ ❌ Pas de données")
+                try:
+                    match_data = await get_match_details(match_id)
+                    
+                    if not match_data:
+                        print(f"  └─ ❌ Pas de données")
+                        continue
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur get_match_details: {e}")
                     continue
                 
-                stats = extract_player_stats(match_data, puuid)
-                if not stats:
-                    print(f"  └─ ⏭️  Stats non extraites (ancienne saison ou erreur)")
-                    found_old_season = True
-                    break
+                try:
+                    stats = extract_player_stats(match_data, puuid)
+                    if not stats:
+                        print(f"  └─ ⏭️  Stats non extraites (ancienne saison ou erreur)")
+                        found_old_season = True
+                        break
+                except Exception as e:
+                    print(f"  └─ ❌ Erreur extract_player_stats: {e}")
+                    continue
                 
                 try:
                     await bot.db.save_match_stats(match_id, puuid, stats)
@@ -123,7 +135,7 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
                         pass
             
             if found_old_season:
-                print(f"\n🛑 Arrêt: match avant le 8 janvier 2026 trouvé")
+                print(f"\n🛑 Arrêt: match d'ancienne saison trouvé")
                 break
             
             if len(match_ids) < batch_size:
@@ -140,6 +152,15 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         print(f"{'='*70}\n")
         
         return new_matches
+        
+    except Exception as e:
+        print(f"\n{'='*70}")
+        print(f"❌ SYNC ÉCHOUÉ: {riot_id}")
+        print(f"❌ ERREUR GLOBALE: {e}")
+        print(f"{'='*70}\n")
+        import traceback
+        traceback.print_exc()
+        return 0
     finally:
         bot.syncing_players.discard(puuid)
 
@@ -187,14 +208,6 @@ async def on_ready():
         print(f"Synchronisé {len(synced)} commandes")
     except Exception as e:
         print(f"Erreur sync commandes: {e}")
-
-    # Lancer full sync pour tous les comptes dès que le bot est ready
-    linked_accounts = await bot.db.get_all_linked_accounts()
-    for discord_id, account_info in linked_accounts.items():
-        asyncio.create_task(sync_player_full_history(
-            account_info['puuid'],
-            account_info['riot_id']
-        ))
     
     if not check_rank_changes.is_running():
         check_rank_changes.start()
