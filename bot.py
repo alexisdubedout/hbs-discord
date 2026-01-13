@@ -26,7 +26,8 @@ bot = LoLBot()
 
 async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
     """
-    Récupère l'historique complet des matchs d'un joueur pour la saison en cours
+    Récupère l'historique complet des matchs d'un joueur jusqu'au 8 janvier 2026
+    Comportement identique à sync_match_history mais pour tous les matchs de la saison
     """
     if puuid in bot.syncing_players:
         print(f"⚠️ Sync déjà en cours pour {riot_id}")
@@ -60,14 +61,8 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
             # Récupérer un batch de matchs
             print(f"🌐 Appel API get_match_list...")
             try:
-                match_ids = await asyncio.wait_for(
-                    get_match_list(puuid, start=start_index, count=batch_size),
-                    timeout=30
-                )
+                match_ids = await get_match_list(puuid, start=start_index, count=batch_size)
                 print(f"✅ API Response: {len(match_ids) if match_ids else 0} matchs")
-            except asyncio.TimeoutError:
-                print(f"❌ TIMEOUT sur get_match_list après 30s")
-                break
             except Exception as e:
                 print(f"❌ ERREUR get_match_list: {e}")
                 break
@@ -81,90 +76,60 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
             
             # Parcourir chaque match du batch
             found_old_season = False
+            
             for idx, match_id in enumerate(match_ids, 1):
                 print(f"\n  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
                 
-                # Vérifier si déjà en DB
-                print(f"  └─ Vérification DB...")
-                try:
-                    exists = await asyncio.wait_for(
-                        bot.db.match_exists(match_id, puuid),
-                        timeout=5
-                    )
-                    if exists:
-                        print(f"  └─ ⏭️  Déjà en DB, skip")
-                        continue
-                    print(f"  └─ ✅ Nouveau match, récupération...")
-                except asyncio.TimeoutError:
-                    print(f"  └─ ❌ TIMEOUT sur match_exists")
-                    continue
-                except Exception as e:
-                    print(f"  └─ ❌ Erreur match_exists: {e}")
+                # Vérifier si déjà en DB (IDENTIQUE à sync_match_history)
+                if await bot.db.match_exists(match_id, puuid):
+                    print(f"  └─ ⏭️  Déjà en DB, skip")
                     continue
                 
-                # Délai pour respecter rate limit
-                await asyncio.sleep(0.6)
+                # Délai pour respecter rate limit (IDENTIQUE à sync_match_history)
+                await asyncio.sleep(0.5)
                 
-                # Récupérer les détails
-                print(f"  └─ Appel API get_match_details...")
-                try:
-                    match_data = await asyncio.wait_for(
-                        get_match_details(match_id),
-                        timeout=10
-                    )
-                    if not match_data:
-                        print(f"  └─ ❌ Pas de données")
-                        continue
-                    print(f"  └─ ✅ Données récupérées")
-                except asyncio.TimeoutError:
-                    print(f"  └─ ❌ TIMEOUT sur get_match_details")
-                    continue
-                except Exception as e:
-                    print(f"  └─ ❌ Erreur get_match_details: {e}")
+                # Récupérer les détails (IDENTIQUE à sync_match_history)
+                match_data = await get_match_details(match_id)
+                
+                if not match_data:
+                    print(f"  └─ ❌ Pas de données")
                     continue
                 
-                # Extraire les stats (la vérification de saison se fait DANS extract_player_stats maintenant)
-                print(f"  └─ Extraction des stats...")
-                try:
-                    stats = extract_player_stats(match_data, puuid)
-                    
-                    # Si stats est None, c'est que le match est trop ancien (avant le 8 janvier 2025)
-                    if not stats:
-                        print(f"  └─ ⏭️  Match ignoré (ancienne saison ou erreur)")
-                        found_old_season = True
-                        break
-                    
-                    print(f"  └─ ✅ Stats extraites: {stats.get('champion', '?')}")
-                    
-                except Exception as e:
-                    print(f"  └─ ❌ Erreur extract_player_stats: {e}")
-                    continue
+                print(f"  └─ ✅ Données récupérées")
                 
-                # Sauvegarder
-                print(f"  └─ Sauvegarde en DB...")
+                # Extraire les stats (IDENTIQUE à sync_match_history)
+                stats = extract_player_stats(match_data, puuid)
+                
+                # Si stats est None, c'est soit une erreur, soit un match avant le 8 janvier 2026
+                if not stats:
+                    print(f"  └─ ⏭️  Stats non extraites (ancienne saison ou erreur)")
+                    # On considère qu'on a atteint l'ancienne saison, on arrête ce joueur
+                    found_old_season = True
+                    break
+                
+                # Sauvegarder (IDENTIQUE à sync_match_history - SANS timeout)
                 try:
-                    await asyncio.wait_for(
-                        bot.db.save_match_stats(match_id, puuid, stats),
-                        timeout=5
-                    )
+                    await bot.db.save_match_stats(match_id, puuid, stats)
                     new_matches += 1
-                    print(f"  └─ ✅ SAUVEGARDÉ ({new_matches} total)")
-                except asyncio.TimeoutError:
-                    print(f"  └─ ❌ TIMEOUT sur save_match_stats")
-                    continue
+                    print(f"  └─ ✅ SAUVEGARDÉ - {stats['champion']} ({new_matches} total)")
                 except Exception as e:
                     print(f"  └─ ❌ Erreur save_match_stats: {e}")
                     continue
                 
-                if new_matches % 10 == 0 and progress_callback:
+                # Callback de progression tous les 10 matchs
+                if new_matches > 0 and new_matches % 10 == 0 and progress_callback:
                     try:
-                        await progress_callback(f"💾 {new_matches} nouveaux matchs enregistrés...")
+                        await progress_callback(
+                            f"🔍 Analyse en cours...\n"
+                            f"📊 {total_checked} matchs vérifiés\n"
+                            f"✅ {new_matches} nouveaux matchs enregistrés"
+                        )
                     except:
                         pass
             
             # Si on a trouvé un match de l'ancienne saison, on arrête
             if found_old_season:
-                print(f"\n🛑 Arrêt: match d'ancienne saison trouvé")
+                print(f"\n🛑 Arrêt: match avant le 8 janvier 2026 trouvé")
                 break
             
             # Si on a eu moins de matchs que demandé, c'est qu'on est à la fin
@@ -418,4 +383,5 @@ async def sync_match_history():
 
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
 
