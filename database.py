@@ -180,58 +180,58 @@ class Database:
             return row is not None
     
     async def save_match_stats(self, match_id: str, puuid: str, stats: dict):
-        """Sauvegarde les stats d'un match pour un joueur avec logs de debug"""
-        if not self.pool:
-            print("❌ DEBUG: pool est None!")
-            return False
-        
-        print(f"🔍 DEBUG: Tentative d'insertion - match_id={match_id[:20]}..., champion={stats.get('champion')}")
-        
-        try:
-            async with self.pool.acquire() as conn:
-                print(f"🔍 DEBUG: Connexion acquise")
-                
-                result = await conn.execute('''
-                    INSERT INTO match_stats 
-                    (match_id, puuid, champion, kills, deaths, assists, cs, 
-                     game_duration, vision_score, win, queue_id, game_date)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    ON CONFLICT (match_id, puuid) DO NOTHING
-                ''', 
-                    match_id, 
-                    puuid, 
-                    stats['champion'],
-                    stats['kills'],
-                    stats['deaths'],
-                    stats['assists'],
-                    stats['cs'],
-                    stats['game_duration'],
-                    stats['vision_score'],
-                    stats['win'],
-                    stats['queue_id'],
-                    stats['game_date']
-                )
-                
-                print(f"✅ DEBUG: Execute terminé - result={result}")
-                
-                # Vérifier si l'insertion a vraiment eu lieu
-                check = await conn.fetchval(
-                    'SELECT COUNT(*) FROM match_stats WHERE match_id = $1 AND puuid = $2',
-                    match_id, puuid
-                )
-                print(f"✅ DEBUG: Vérification - {check} ligne(s) trouvée(s)")
-                
-                if check == 0:
-                    print(f"⚠️ DEBUG: CONFLIT! La ligne n'a pas été insérée (déjà existante?)")
-                
-            print(f"✅ DEBUG: Connexion relâchée")
-            return True
+    """Sauvegarde les stats d'un match pour un joueur avec logs de debug"""
+    if not self.pool:
+        print("❌ DEBUG: pool est None!")
+        return False
+    
+    print(f"🔍 DEBUG: Tentative d'insertion - match_id={match_id[:20]}..., champion={stats.get('champion')}")
+    
+    try:
+        async with self.pool.acquire() as conn:
+            print(f"🔍 DEBUG: Connexion acquise")
             
-        except Exception as e:
-            print(f"❌ DEBUG: ERREUR dans save_match_stats: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+            result = await conn.execute('''
+                INSERT INTO match_stats 
+                (match_id, puuid, champion, kills, deaths, assists, cs, 
+                 game_duration, vision_score, win, queue_id, game_date)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (match_id, puuid) DO NOTHING
+            ''', 
+                match_id, 
+                puuid, 
+                stats['champion'],
+                stats['kills'],
+                stats['deaths'],
+                stats['assists'],
+                stats['cs'],
+                stats['game_duration'],
+                stats['vision_score'],
+                stats['win'],
+                stats['queue_id'],
+                stats['game_date']
+            )
+            
+            print(f"✅ DEBUG: Execute terminé - result={result}")
+            
+            # Vérifier si l'insertion a vraiment eu lieu
+            check = await conn.fetchval(
+                'SELECT COUNT(*) FROM match_stats WHERE match_id = $1 AND puuid = $2',
+                match_id, puuid
+            )
+            print(f"✅ DEBUG: Vérification - {check} ligne(s) trouvée(s)")
+            
+            if check == 0:
+                print(f"⚠️ DEBUG: CONFLIT! La ligne n'a pas été insérée (déjà existante?)")
+            
+        print(f"✅ DEBUG: Connexion relâchée")
+        return True
+        
+    except Exception as e:
+        print(f"❌ DEBUG: ERREUR dans save_match_stats: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
     
     async def get_player_stats(self, puuid: str, queue_filter: str = None):
         """Récupère toutes les stats d'un joueur avec filtre optionnel"""
@@ -351,4 +351,5 @@ class Database:
                 puuid
             )
             return row['count'] if row else 0
+
 
