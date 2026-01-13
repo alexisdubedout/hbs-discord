@@ -62,6 +62,17 @@ class Database:
                     PRIMARY KEY (match_id, puuid)
                 )
             ''')
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS milestones (
+                    id SERIAL PRIMARY KEY,
+                    puuid TEXT NOT NULL,
+                    milestone_type TEXT NOT NULL,
+                    milestone_value INTEGER NOT NULL,
+                    reached_at TIMESTAMP DEFAULT NOW(),
+                    extra_data TEXT,
+                    UNIQUE(puuid, milestone_type, milestone_value, extra_data)
+                )
+            ''')
             # Index pour accélérer les requêtes
             await conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_match_stats_puuid 
@@ -351,6 +362,111 @@ class Database:
                 puuid
             )
             return row['count'] if row else 0
+
+# === FONCTIONS POUR MILESTONES ===
+
+async def check_and_save_milestone(self, puuid: str, milestone_type: str, current_value: int, extra_data: str = None):
+    """
+    Vérifie si un milestone a été atteint et le sauvegarde si nouveau
+    Retourne le palier atteint si nouveau, None sinon
+    """
+    if not self.pool:
+        return None
+    
+    # Paliers disponibles par type
+    THRESHOLDS = {
+        'deaths': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
+        'kills': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
+        'games': [50, 100, 250, 500, 750, 1000],
+        'wins': [50, 100, 200, 300, 500, 750, 1000],
+        'losses': [50, 100, 200, 300, 500, 750, 1000],
+        'win_streak': [5, 10, 15, 20],
+        'lose_streak': [5, 10, 15, 20],
+        'champion_games': [25, 50, 100, 200, 300]
+    }
+    
+    thresholds = THRESHOLDS.get(milestone_type, [])
+    
+    # Trouver le plus grand palier atteint
+    reached_threshold = None
+    for threshold in thresholds:
+        if current_value >= threshold:
+            reached_threshold = threshold
+        else:
+            break
+    
+    if not reached_threshold:
+        return None
+    
+    async with self.pool.acquire() as conn:
+        # Vérifier si ce milestone existe déjà
+        exists = await conn.fetchrow('''
+            SELECT 1 FROM milestones 
+            WHERE puuid = $1 AND milestone_type = $2 AND milestone_value = $3 
+            AND ($4::TEXT IS NULL OR extra_data = $4)
+        ''', puuid, milestone_type, reached_threshold, extra_data)
+        
+        if exists:
+            return None
+        
+        # Sauvegarder le nouveau milestone
+        await conn.execute('''
+            INSERT INTO milestones (puuid, milestone_type, milestone_value, extra_data)
+            VALUES ($1, $2, $3, $4)
+        ''', puuid, milestone_type, reached_threshold, extra_data)
+        
+        return reached_threshold
+
+async def get_current_streak(self, puuid: str):
+    """
+    Calcule la série actuelle (win streak ou lose streak)
+    Retourne ('win', count) ou ('lose', count) ou (None, 0)
+    """
+    if not self.pool:
+        return None, 0
+    
+    async with self.pool.acquire() as conn:
+        # Récupérer les 20 derniers matchs triés par date
+        rows = await conn.fetch('''
+            SELECT win FROM match_stats 
+            WHERE puuid = $1 
+            ORDER BY game_date DESC 
+            LIMIT 20
+        ''', puuid)
+        
+        if not rows or len(rows) == 0:
+            return None, 0
+        
+        # Calculer la série actuelle
+        streak_type = 'win' if rows[0]['win'] else 'lose'
+        streak_count = 0
+        
+        for row in rows:
+            if (streak_type == 'win' and row['win']) or (streak_type == 'lose' and not row['win']):
+                streak_count += 1
+            else:
+                break
+        
+        return streak_type, streak_count
+
+async def get_champion_stats(self, puuid: str):
+    """
+    Récupère les stats par champion
+    Retourne dict {champion: game_count}
+    """
+    if not self.pool:
+        return {}
+    
+    async with self.pool.acquire() as conn:
+        rows = await conn.fetch('''
+            SELECT champion, COUNT(*) as game_count
+            FROM match_stats
+            WHERE puuid = $1
+            GROUP BY champion
+            ORDER BY game_count DESC
+        ''', puuid)
+        
+        return {row['champion']: row['game_count'] for row in rows}
 
 
 
