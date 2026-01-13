@@ -48,10 +48,10 @@ async def get_ranked_stats(puuid: str):
                 return None
             return None
 
-async def get_match_list(puuid: str, count: int = 5):
-    """Récupère la liste des IDs des derniers matchs d'un joueur"""
+async def get_match_list(puuid: str, start: int = 0, count: int = 5):
+    """Récupère la liste des IDs des matchs d'un joueur avec pagination"""
     url = f"https://{PLATFORM}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids"
-    params = {"start": 0, "count": count}
+    params = {"start": start, "count": count}
     headers = {"X-Riot-Token": RIOT_API_KEY}
     
     async with aiohttp.ClientSession() as session:
@@ -110,3 +110,9 @@ def extract_player_stats(match_data: dict, puuid: str):
     except Exception as e:
         print(f"Erreur extraction stats: {e}")
         return None
+
+def is_current_season(game_date: datetime) -> bool:
+    """Vérifie si un match appartient à la saison en cours (2025)"""
+    # La saison 2025 a commencé le 10 janvier 2025
+    season_start = datetime(2025, 1, 10)
+    return game_date >= season_start
