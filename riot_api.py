@@ -81,11 +81,18 @@ def extract_player_stats(match_data: dict, puuid: str):
         return None
     
     try:
-        # Date de début de saison
-        season_start_timestamp = 1736294400000  # 8 janvier 2025 00:00:00 en millisecondes
+        # Convertir le timestamp en datetime (gameCreation est en millisecondes)
+        game_timestamp_ms = match_data['info']['gameCreation']
+        game_date = datetime.fromtimestamp(game_timestamp_ms / 1000)
         
-        # Vérifier la date AVANT de traiter
-        if match_data['info']['gameCreation'] < season_start_timestamp:
+        # Date de début de saison (8 janvier 2025)
+        season_start = datetime(2025, 1, 8, 0, 0, 0)
+        
+        # Debug
+        print(f"  └─ 📅 Timestamp: {game_timestamp_ms} -> Date: {game_date.strftime('%Y-%m-%d %H:%M')}")
+        
+        # Vérifier si le match est de la saison actuelle AVANT de continuer
+        if game_date < season_start:
             print(f"  └─ ⏭️  Match avant le 8 janvier 2025, ignoré")
             return None
         
@@ -110,41 +117,14 @@ def extract_player_stats(match_data: dict, puuid: str):
             'vision_score': participant['visionScore'],
             'win': participant['win'],
             'queue_id': match_data['info']['queueId'],
-            'game_date': datetime.fromtimestamp(match_data['info']['gameCreation'] / 1000)
+            'game_date': game_date  # Utiliser la date déjà convertie
         }
         
         return stats
     
     except Exception as e:
         print(f"Erreur extraction stats: {e}")
+        import traceback
+        traceback.print_exc()
         return None
-    
-    except Exception as e:
-        print(f"Erreur extraction stats: {e}")
-        return None
-
-def is_current_season(game_date) -> bool:
-    """
-    Vérifie si un match appartient à la saison en cours (2025)
-    Split 1 2025 a commencé le 8 janvier 2025
-    """
-    # Date de début de la saison 2025 (8 janvier 2025 à minuit)
-    season_start = datetime(2025, 1, 8, 0, 0, 0)
-    
-    # Si c'est un timestamp (int), le convertir en datetime
-    if isinstance(game_date, int):
-        # Timestamp en millisecondes
-        if game_date > 10000000000:
-            game_date = datetime.fromtimestamp(game_date / 1000)
-        # Timestamp en secondes
-        else:
-            game_date = datetime.fromtimestamp(game_date)
-    
-    # Comparer les dates
-    is_current = game_date >= season_start
-    
-    # Debug pour voir ce qui se passe
-    print(f"  └─ 📅 Date du match: {game_date.strftime('%Y-%m-%d %H:%M')} | Saison actuelle: {is_current}")
-    
-    return is_current
 
