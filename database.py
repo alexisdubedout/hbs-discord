@@ -363,120 +363,121 @@ class Database:
             )
             return row['count'] if row else 0
 
-# === FONCTIONS POUR MILESTONES ===
-
-async def check_and_save_milestone(
-    self,
-    puuid: str,
-    milestone_type: str,
-    current_value: int,
-    extra_data: str = None
-):
-    if not self.pool:
-        return None
-
-    THRESHOLDS = {
-        'deaths': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
-        'kills': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
-        'games': [50, 100, 250, 500, 750, 1000],
-        'wins': [50, 100, 200, 300, 500, 750, 1000],
-        'losses': [50, 100, 200, 300, 500, 750, 1000],
-        'win_streak': [5, 10, 15, 20],
-        'lose_streak': [5, 10, 15, 20],
-        'champion_games': [25, 50, 100, 200, 300]
-    }
-
-    thresholds = THRESHOLDS.get(milestone_type, [])
-    if not thresholds:
-        return None
-
-    # 🥇 plus haut palier atteignable
-    reached_threshold = max(
-        (t for t in thresholds if current_value >= t),
-        default=None
-    )
-
-    if reached_threshold is None:
-        return None
-
-    async with self.pool.acquire() as conn:
-        # 🔎 dernier milestone enregistré
-        last_saved = await conn.fetchval(
-            '''
-            SELECT MAX(milestone_value)
-            FROM milestones
-            WHERE puuid = $1 AND milestone_type = $2
-            AND ($3::TEXT IS NULL OR extra_data = $3)
-            ''',
-            puuid, milestone_type, extra_data
-        )
-
-        # 🚫 déjà au même niveau ou plus haut → rien à faire
-        if last_saved is not None and reached_threshold <= last_saved:
-            return None
-
-        # 💾 sauvegarde uniquement le meilleur
-        await conn.execute(
-            '''
-            INSERT INTO milestones (puuid, milestone_type, milestone_value, extra_data)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT DO NOTHING
-            ''',
-            puuid, milestone_type, reached_threshold, extra_data
-        )
-
-        return reached_threshold
-
-async def get_current_streak(self, puuid: str):
-    """
-    Calcule la série actuelle (win streak ou lose streak)
-    Retourne ('win', count) ou ('lose', count) ou (None, 0)
-    """
-    if not self.pool:
-        return None, 0
+    # === FONCTIONS POUR MILESTONES ===
     
-    async with self.pool.acquire() as conn:
-        # Récupérer les 20 derniers matchs triés par date
-        rows = await conn.fetch('''
-            SELECT win FROM match_stats 
-            WHERE puuid = $1 
-            ORDER BY game_date DESC 
-            LIMIT 20
-        ''', puuid)
-        
-        if not rows or len(rows) == 0:
+    async def check_and_save_milestone(
+        self,
+        puuid: str,
+        milestone_type: str,
+        current_value: int,
+        extra_data: str = None
+    ):
+        if not self.pool:
+            return None
+    
+        THRESHOLDS = {
+            'deaths': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
+            'kills': [100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000],
+            'games': [50, 100, 250, 500, 750, 1000],
+            'wins': [50, 100, 200, 300, 500, 750, 1000],
+            'losses': [50, 100, 200, 300, 500, 750, 1000],
+            'win_streak': [5, 10, 15, 20],
+            'lose_streak': [5, 10, 15, 20],
+            'champion_games': [25, 50, 100, 200, 300]
+        }
+    
+        thresholds = THRESHOLDS.get(milestone_type, [])
+        if not thresholds:
+            return None
+    
+        # 🥇 plus haut palier atteignable
+        reached_threshold = max(
+            (t for t in thresholds if current_value >= t),
+            default=None
+        )
+    
+        if reached_threshold is None:
+            return None
+    
+        async with self.pool.acquire() as conn:
+            # 🔎 dernier milestone enregistré
+            last_saved = await conn.fetchval(
+                '''
+                SELECT MAX(milestone_value)
+                FROM milestones
+                WHERE puuid = $1 AND milestone_type = $2
+                AND ($3::TEXT IS NULL OR extra_data = $3)
+                ''',
+                puuid, milestone_type, extra_data
+            )
+    
+            # 🚫 déjà au même niveau ou plus haut → rien à faire
+            if last_saved is not None and reached_threshold <= last_saved:
+                return None
+    
+            # 💾 sauvegarde uniquement le meilleur
+            await conn.execute(
+                '''
+                INSERT INTO milestones (puuid, milestone_type, milestone_value, extra_data)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT DO NOTHING
+                ''',
+                puuid, milestone_type, reached_threshold, extra_data
+            )
+    
+            return reached_threshold
+    
+    async def get_current_streak(self, puuid: str):
+        """
+        Calcule la série actuelle (win streak ou lose streak)
+        Retourne ('win', count) ou ('lose', count) ou (None, 0)
+        """
+        if not self.pool:
             return None, 0
         
-        # Calculer la série actuelle
-        streak_type = 'win' if rows[0]['win'] else 'lose'
-        streak_count = 0
-        
-        for row in rows:
-            if (streak_type == 'win' and row['win']) or (streak_type == 'lose' and not row['win']):
-                streak_count += 1
-            else:
-                break
-        
-        return streak_type, streak_count
-
-async def get_champion_stats(self, puuid: str):
-    """
-    Récupère les stats par champion
-    Retourne dict {champion: game_count}
-    """
-    if not self.pool:
-        return {}
+        async with self.pool.acquire() as conn:
+            # Récupérer les 20 derniers matchs triés par date
+            rows = await conn.fetch('''
+                SELECT win FROM match_stats 
+                WHERE puuid = $1 
+                ORDER BY game_date DESC 
+                LIMIT 20
+            ''', puuid)
+            
+            if not rows or len(rows) == 0:
+                return None, 0
+            
+            # Calculer la série actuelle
+            streak_type = 'win' if rows[0]['win'] else 'lose'
+            streak_count = 0
+            
+            for row in rows:
+                if (streak_type == 'win' and row['win']) or (streak_type == 'lose' and not row['win']):
+                    streak_count += 1
+                else:
+                    break
+            
+            return streak_type, streak_count
     
-    async with self.pool.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT champion, COUNT(*) as game_count
-            FROM match_stats
-            WHERE puuid = $1
-            GROUP BY champion
-            ORDER BY game_count DESC
-        ''', puuid)
+    async def get_champion_stats(self, puuid: str):
+        """
+        Récupère les stats par champion
+        Retourne dict {champion: game_count}
+        """
+        if not self.pool:
+            return {}
         
-        return {row['champion']: row['game_count'] for row in rows}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch('''
+                SELECT champion, COUNT(*) as game_count
+                FROM match_stats
+                WHERE puuid = $1
+                GROUP BY champion
+                ORDER BY game_count DESC
+            ''', puuid)
+            
+            return {row['champion']: row['game_count'] for row in rows}
+
 
 
 
