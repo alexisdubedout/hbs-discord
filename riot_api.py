@@ -81,6 +81,14 @@ def extract_player_stats(match_data: dict, puuid: str):
         return None
     
     try:
+        # Date de début de saison
+        season_start_timestamp = 1736294400000  # 8 janvier 2025 00:00:00 en millisecondes
+        
+        # Vérifier la date AVANT de traiter
+        if match_data['info']['gameCreation'] < season_start_timestamp:
+            print(f"  └─ ⏭️  Match avant le 8 janvier 2025, ignoré")
+            return None
+        
         # Trouver le participant correspondant au PUUID
         participant = None
         for p in match_data['info']['participants']:
@@ -110,9 +118,14 @@ def extract_player_stats(match_data: dict, puuid: str):
     except Exception as e:
         print(f"Erreur extraction stats: {e}")
         return None
+    
+    except Exception as e:
+        print(f"Erreur extraction stats: {e}")
+        return None
 
 def is_current_season(game_date: datetime) -> bool:
     """Vérifie si un match appartient à la saison en cours (2025)"""
     # La saison 2025 a commencé le 10 janvier 2025
     season_start = datetime(2025, 1, 10)
     return game_date >= season_start
+
