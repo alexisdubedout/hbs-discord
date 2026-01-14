@@ -358,26 +358,121 @@ async def sync_match_history():
                     await bot.db.save_match_stats(match_id, puuid, stats)
                     total_new_matches += 1
                     
-                    # === CHECK MILESTONE ET ENVOI DM ===
+                    # === CHECK MILESTONES ET ENVOI DM ===
                     if member:
-                        milestone = await bot.db.check_and_save_milestone(puuid, stats)
-                        if milestone:
-                            try:
-                                embed = discord.Embed(
-                                    title="🏆 Nouveau Milestone !",
-                                    description=f"Félicitations {member.display_name} !\n"
-                                                f"Tu as atteint un nouveau record personnel : **{milestone['name']}**",
-                                    color=discord.Color.green()
+                        # Récupérer les stats complètes du joueur pour calculer les milestones
+                        all_player_stats = await bot.db.get_player_stats_summary(puuid)
+                        
+                        if all_player_stats:
+                            milestones_to_check = []
+                            
+                            # 1. Total deaths
+                            milestones_to_check.append({
+                                'type': 'deaths',
+                                'value': all_player_stats['total_deaths'],
+                                'name': f"{all_player_stats['total_deaths']} morts au total",
+                                'unit': 'morts'
+                            })
+                            
+                            # 2. Total kills
+                            milestones_to_check.append({
+                                'type': 'kills',
+                                'value': all_player_stats['total_kills'],
+                                'name': f"{all_player_stats['total_kills']} kills au total",
+                                'unit': 'kills'
+                            })
+                            
+                            # 3. Total games
+                            milestones_to_check.append({
+                                'type': 'games',
+                                'value': all_player_stats['total_games'],
+                                'name': f"{all_player_stats['total_games']} parties jouées",
+                                'unit': 'parties'
+                            })
+                            
+                            # 4. Total wins
+                            milestones_to_check.append({
+                                'type': 'wins',
+                                'value': all_player_stats['wins'],
+                                'name': f"{all_player_stats['wins']} victoires",
+                                'unit': 'victoires'
+                            })
+                            
+                            # 5. Total losses
+                            milestones_to_check.append({
+                                'type': 'losses',
+                                'value': all_player_stats['losses'],
+                                'name': f"{all_player_stats['losses']} défaites",
+                                'unit': 'défaites'
+                            })
+                            
+                            # 6. Win/Lose streaks
+                            streak_type, streak_count = await bot.db.get_current_streak(puuid)
+                            if streak_type and streak_count >= 5:
+                                streak_milestone_type = 'win_streak' if streak_type == 'win' else 'lose_streak'
+                                streak_name = f"{streak_count} victoires consécutives" if streak_type == 'win' else f"{streak_count} défaites consécutives"
+                                milestones_to_check.append({
+                                    'type': streak_milestone_type,
+                                    'value': streak_count,
+                                    'name': streak_name,
+                                    'unit': 'en série'
+                                })
+                            
+                            # 7. Champion-specific games
+                            champion_stats = await bot.db.get_champion_stats(puuid)
+                            for champion, game_count in champion_stats.items():
+                                if game_count >= 25:  # Seuil minimum
+                                    milestones_to_check.append({
+                                        'type': 'champion_games',
+                                        'value': game_count,
+                                        'name': f"{game_count} parties avec {champion}",
+                                        'unit': f'parties ({champion})',
+                                        'extra_data': champion
+                                    })
+                            
+                            # Vérifier tous les milestones et garder le meilleur
+                            best_milestone = None
+                            best_value = 0
+                            
+                            for milestone_data in milestones_to_check:
+                                extra = milestone_data.get('extra_data')
+                                reached = await bot.db.check_and_save_milestone(
+                                    puuid,
+                                    milestone_data['type'],
+                                    milestone_data['value'],
+                                    extra
                                 )
-                                embed.add_field(name="Détail", value=f"{milestone['value']} {milestone.get('unit', '')}", inline=False)
-                                embed.set_footer(text="Ce message est automatique • Seul ton meilleur milestone est envoyé")
-                                embed.timestamp = discord.utils.utcnow()
                                 
-                                await member.send(embed=embed)
-                            except discord.Forbidden:
-                                print(f"Impossible de DM {member.display_name}")
-                            except Exception as e:
-                                print(f"Erreur en DM milestone pour {member.display_name}: {e}")
+                                if reached and reached > best_value:
+                                    best_value = reached
+                                    best_milestone = {
+                                        'name': milestone_data['name'],
+                                        'value': reached,
+                                        'unit': milestone_data['unit']
+                                    }
+                            
+                            # Envoyer uniquement le meilleur milestone
+                            if best_milestone:
+                                try:
+                                    embed = discord.Embed(
+                                        title="🏆 Nouveau Milestone !",
+                                        description=f"Félicitations {member.display_name} !\n"
+                                                    f"Tu as atteint un nouveau record personnel : **{best_milestone['name']}**",
+                                        color=discord.Color.green()
+                                    )
+                                    embed.add_field(
+                                        name="Détail", 
+                                        value=f"{best_milestone['value']} {best_milestone.get('unit', '')}", 
+                                        inline=False
+                                    )
+                                    embed.set_footer(text="Ce message est automatique • Seul ton meilleur milestone est envoyé")
+                                    embed.timestamp = discord.utils.utcnow()
+                                    
+                                    await member.send(embed=embed)
+                                except discord.Forbidden:
+                                    print(f"Impossible de DM {member.display_name}")
+                                except Exception as e:
+                                    print(f"Erreur en DM milestone pour {member.display_name}: {e}")
             
             await asyncio.sleep(1)
         except Exception as e:
@@ -391,4 +486,3 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
-
