@@ -175,102 +175,257 @@ def register_commands(bot):
                     f"🎉 Toutes les stats sont maintenant à jour !"
         )
     
-    @bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
-    async def leaderboard(interaction: discord.Interaction):
-        await interaction.response.defer()
-        
-        linked_accounts = await bot.db.get_all_linked_accounts()
-        
-        if not linked_accounts:
-            await interaction.followup.send("❌ Aucun compte lié pour le moment.")
-            return
-        
-        players_data = []
-        
-        for discord_id, account_info in linked_accounts.items():
-            try:
-                member = interaction.guild.get_member(int(discord_id))
-                if not member:
-                    continue
-                
-                summoner = await get_summoner_data(account_info['puuid'])
-                if not summoner:
-                    continue
-                
-                ranked_stats = await get_ranked_stats(account_info['puuid'])
-                
-                if ranked_stats:
-                    tier = ranked_stats['tier']
-                    rank = ranked_stats['rank']
-                    lp = ranked_stats['leaguePoints']
-                    wins = ranked_stats['wins']
-                    losses = ranked_stats['losses']
-                    total = wins + losses
-                    winrate = round((wins / total) * 100, 1) if total > 0 else 0
-                    
-                    rank_value = get_rank_value(tier, rank, lp)
-                    
-                    players_data.append({
-                        'name': f"{account_info['riot_id']}#{account_info['tagline']}",
-                        'discord_name': member.display_name,
-                        'tier': tier,
-                        'rank': rank,
-                        'lp': lp,
-                        'wins': wins,
-                        'losses': losses,
-                        'winrate': winrate,
-                        'rank_value': rank_value
-                    })
-                else:
-                    players_data.append({
-                        'name': f"{account_info['riot_id']}#{account_info['tagline']}",
-                        'discord_name': member.display_name,
-                        'tier': 'UNRANKED',
-                        'rank': '',
-                        'lp': 0,
-                        'wins': 0,
-                        'losses': 0,
-                        'winrate': 0,
-                        'rank_value': -1
-                    })
-            except Exception as e:
-                print(f"Erreur pour {discord_id}: {e}")
+@bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
+@app_commands.describe(
+    critere="Critère de classement"
+)
+@app_commands.choices(critere=[
+    app_commands.Choice(name="🏆 Rang SoloQ", value="rank"),
+    app_commands.Choice(name="⚔️ Total Kills", value="kills"),
+    app_commands.Choice(name="💀 Total Deaths", value="deaths"),
+    app_commands.Choice(name="🤝 Total Assists", value="assists"),
+    app_commands.Choice(name="📊 KDA Moyen", value="kda"),
+    app_commands.Choice(name="📈 Winrate (%)", value="winrate"),
+    app_commands.Choice(name="🎮 Nombre de Games", value="games"),
+    app_commands.Choice(name="🌾 CS/min Moyen", value="cs"),
+    app_commands.Choice(name="👁️ Vision Score Moyen", value="vision")
+])
+async def leaderboard(interaction: discord.Interaction, critere: str = "rank"):
+    await interaction.response.defer()
+    
+    linked_accounts = await bot.db.get_all_linked_accounts()
+    
+    if not linked_accounts:
+        await interaction.followup.send("❌ Aucun compte lié pour le moment.")
+        return
+    
+    players_data = []
+    
+    for discord_id, account_info in linked_accounts.items():
+        try:
+            member = interaction.guild.get_member(int(discord_id))
+            if not member:
                 continue
+            
+            # Récupérer les stats ranked (toujours utiles pour l'affichage)
+            ranked_stats = await get_ranked_stats(account_info['puuid'])
+            
+            # Récupérer les stats de matchs depuis la DB
+            match_stats = await bot.db.get_player_stats_summary(account_info['puuid'])
+            
+            player_info = {
+                'name': f"{account_info['riot_id']}#{account_info['tagline']}",
+                'discord_name': member.display_name,
+                'puuid': account_info['puuid']
+            }
+            
+            # Stats ranked
+            if ranked_stats:
+                tier = ranked_stats['tier']
+                rank = ranked_stats['rank']
+                lp = ranked_stats['leaguePoints']
+                wins = ranked_stats['wins']
+                losses = ranked_stats['losses']
+                total = wins + losses
+                winrate_ranked = round((wins / total) * 100, 1) if total > 0 else 0
+                
+                player_info.update({
+                    'tier': tier,
+                    'rank': rank,
+                    'lp': lp,
+                    'ranked_wins': wins,
+                    'ranked_losses': losses,
+                    'ranked_winrate': winrate_ranked,
+                    'rank_value': get_rank_value(tier, rank, lp)
+                })
+            else:
+                player_info.update({
+                    'tier': 'UNRANKED',
+                    'rank': '',
+                    'lp': 0,
+                    'ranked_wins': 0,
+                    'ranked_losses': 0,
+                    'ranked_winrate': 0,
+                    'rank_value': -1
+                })
+            
+            # Stats de matchs (pour les autres critères)
+            if match_stats and match_stats['total_games'] > 0:
+                player_info.update({
+                    'total_games': match_stats['total_games'],
+                    'wins': match_stats['wins'],
+                    'losses': match_stats['losses'],
+                    'winrate': match_stats['winrate'],
+                    'total_kills': match_stats['total_kills'],
+                    'total_deaths': match_stats['total_deaths'],
+                    'total_assists': match_stats['total_assists'],
+                    'kda': match_stats['kda'],
+                    'cs_per_min': match_stats.get('cs_per_min', 0),
+                    'avg_vision_score': match_stats.get('avg_vision_score', 0)
+                })
+            else:
+                player_info.update({
+                    'total_games': 0,
+                    'wins': 0,
+                    'losses': 0,
+                    'winrate': 0,
+                    'total_kills': 0,
+                    'total_deaths': 0,
+                    'total_assists': 0,
+                    'kda': 0.0,
+                    'cs_per_min': 0,
+                    'avg_vision_score': 0
+                })
+            
+            players_data.append(player_info)
+            
+        except Exception as e:
+            print(f"Erreur pour {discord_id}: {e}")
+            continue
+    
+    if not players_data:
+        await interaction.followup.send("❌ Aucune donnée disponible.")
+        return
+    
+    # === TRI SELON LE CRITÈRE ===
+    critere_names = {
+        'rank': '🏆 Rang SoloQ',
+        'kills': '⚔️ Total Kills',
+        'deaths': '💀 Total Deaths',
+        'assists': '🤝 Total Assists',
+        'kda': '📊 KDA Moyen',
+        'winrate': '📈 Winrate',
+        'games': '🎮 Nombre de Games',
+        'cs': '🌾 CS/min Moyen',
+        'vision': '👁️ Vision Score Moyen'
+    }
+    
+    # Filtrer les joueurs qui ont des données pour le critère (sauf rank)
+    if critere != 'rank':
+        players_data = [p for p in players_data if p['total_games'] > 0]
         
         if not players_data:
-            await interaction.followup.send("❌ Aucune donnée disponible.")
+            await interaction.followup.send(f"❌ Aucune donnée de match disponible pour ce critère.")
             return
-        
+    
+    # Trier selon le critère
+    if critere == 'rank':
         players_data.sort(key=lambda x: x['rank_value'], reverse=True)
+    elif critere == 'kills':
+        players_data.sort(key=lambda x: x['total_kills'], reverse=True)
+    elif critere == 'deaths':
+        players_data.sort(key=lambda x: x['total_deaths'], reverse=True)
+    elif critere == 'assists':
+        players_data.sort(key=lambda x: x['total_assists'], reverse=True)
+    elif critere == 'kda':
+        players_data.sort(key=lambda x: x['kda'], reverse=True)
+    elif critere == 'winrate':
+        # Minimum 10 games pour être dans le classement winrate
+        players_data = [p for p in players_data if p['total_games'] >= 10]
+        if not players_data:
+            await interaction.followup.send(f"❌ Aucun joueur n'a assez de games (minimum 10) pour ce classement.")
+            return
+        players_data.sort(key=lambda x: x['winrate'], reverse=True)
+    elif critere == 'games':
+        players_data.sort(key=lambda x: x['total_games'], reverse=True)
+    elif critere == 'cs':
+        # Filtrer les joueurs qui ont des stats de CS (pas ARAM only)
+        players_data = [p for p in players_data if p['cs_per_min'] > 0]
+        if not players_data:
+            await interaction.followup.send(f"❌ Aucune donnée de CS disponible (critère non applicable en ARAM).")
+            return
+        players_data.sort(key=lambda x: x['cs_per_min'], reverse=True)
+    elif critere == 'vision':
+        # Filtrer les joueurs qui ont des stats de vision (pas ARAM only)
+        players_data = [p for p in players_data if p['avg_vision_score'] > 0]
+        if not players_data:
+            await interaction.followup.send(f"❌ Aucune donnée de vision disponible (critère non applicable en ARAM).")
+            return
+        players_data.sort(key=lambda x: x['avg_vision_score'], reverse=True)
+    
+    # === CRÉATION DE L'EMBED ===
+    embed = discord.Embed(
+        title=f"🏆 Classement du Serveur",
+        color=discord.Color.gold(),
+        description=f"**Critère:** {critere_names[critere]}"
+    )
+    
+    # Limiter à 10 joueurs pour éviter un embed trop long
+    top_players = players_data[:10]
+    
+    for i, player in enumerate(top_players, 1):
+        # Médailles pour le top 3
+        medal = ""
+        if i == 1:
+            medal = "🥇 "
+        elif i == 2:
+            medal = "🥈 "
+        elif i == 3:
+            medal = "🥉 "
         
-        embed = discord.Embed(
-            title="🏆 Classement du Serveur",
-            color=discord.Color.gold(),
-            description="Classement SoloQ des joueurs du serveur"
-        )
-        
-        for i, player in enumerate(players_data, 1):
+        # Construire la valeur selon le critère
+        if critere == 'rank':
             emoji = RANK_EMOJIS.get(player['tier'], "❓")
             
             if player['tier'] == 'UNRANKED':
-                rank_str = f"{emoji} **Unranked**"
+                main_value = f"{emoji} **Unranked**"
+                sub_value = "`Aucune game ranked`"
             elif player['tier'] in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
-                rank_str = f"{emoji} **{player['tier'].title()}** - {player['lp']} LP"
+                main_value = f"{emoji} **{player['tier'].title()}** - {player['lp']} LP"
+                sub_value = f"`{player['ranked_wins']}W {player['ranked_losses']}L - {player['ranked_winrate']}% WR`"
             else:
-                rank_str = f"{emoji} **{player['tier'].title()} {player['rank']}** - {player['lp']} LP"
-            
-            value = f"{rank_str}\n`{player['wins']}W {player['losses']}L - {player['winrate']}% WR`"
-            
-            embed.add_field(
-                name=f"#{i} {player['name']}",
-                value=value,
-                inline=False
-            )
+                main_value = f"{emoji} **{player['tier'].title()} {player['rank']}** - {player['lp']} LP"
+                sub_value = f"`{player['ranked_wins']}W {player['ranked_losses']}L - {player['ranked_winrate']}% WR`"
         
-        embed.set_footer(text=f"Mis à jour le")
-        embed.timestamp = discord.utils.utcnow()
+        elif critere == 'kills':
+            main_value = f"⚔️ **{player['total_kills']} kills**"
+            sub_value = f"`{player['total_games']} games • {round(player['total_kills']/player['total_games'], 1)} kills/game`"
         
-        await interaction.followup.send(embed=embed)
+        elif critere == 'deaths':
+            main_value = f"💀 **{player['total_deaths']} deaths**"
+            sub_value = f"`{player['total_games']} games • {round(player['total_deaths']/player['total_games'], 1)} deaths/game`"
+        
+        elif critere == 'assists':
+            main_value = f"🤝 **{player['total_assists']} assists**"
+            sub_value = f"`{player['total_games']} games • {round(player['total_assists']/player['total_games'], 1)} assists/game`"
+        
+        elif critere == 'kda':
+            main_value = f"📊 **{player['kda']} KDA**"
+            sub_value = f"`{player['total_kills']}/{player['total_deaths']}/{player['total_assists']} • {player['total_games']} games`"
+        
+        elif critere == 'winrate':
+            main_value = f"📈 **{player['winrate']}% WR**"
+            sub_value = f"`{player['wins']}W {player['losses']}L • {player['total_games']} games`"
+        
+        elif critere == 'games':
+            main_value = f"🎮 **{player['total_games']} games**"
+            sub_value = f"`{player['wins']}W {player['losses']}L • {player['winrate']}% WR`"
+        
+        elif critere == 'cs':
+            main_value = f"🌾 **{player['cs_per_min']} CS/min**"
+            sub_value = f"`{player['total_games']} games • KDA: {player['kda']}`"
+        
+        elif critere == 'vision':
+            main_value = f"👁️ **{player['avg_vision_score']} vision/game**"
+            sub_value = f"`{player['total_games']} games • KDA: {player['kda']}`"
+        
+        embed.add_field(
+            name=f"{medal}#{i} {player['name']}",
+            value=f"{main_value}\n{sub_value}",
+            inline=False
+        )
+    
+    # Footer avec info supplémentaire
+    footer_text = "Mis à jour le"
+    if critere == 'winrate':
+        footer_text = "Minimum 10 games • " + footer_text
+    elif critere in ['cs', 'vision']:
+        footer_text = "Exclut ARAM uniquement • " + footer_text
+    
+    embed.set_footer(text=footer_text)
+    embed.timestamp = discord.utils.utcnow()
+    
+    await interaction.followup.send(embed=embed)
     
     @bot.tree.command(name="random_teams", description="Génère 2 équipes aléatoires depuis le vocal")
     async def random_teams(interaction: discord.Interaction):
@@ -708,3 +863,4 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+
