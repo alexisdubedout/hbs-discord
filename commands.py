@@ -111,69 +111,77 @@ def register_commands(bot):
         else:
             await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
     
-    @bot.tree.command(name="sync_all_history", description="[ADMIN] Récupère l'historique complet de tous les joueurs liés")
-    async def sync_all_history(interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
-            return
-        
-        await interaction.response.defer()
-        
-        linked_accounts = await bot.db.get_all_linked_accounts()
-        
-        if not linked_accounts:
-            await interaction.followup.send("❌ Aucun compte lié.")
-            return
-        
-        await interaction.followup.send(
-            f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
-            f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
-        )
-        
-        from bot import sync_player_full_history
-        import asyncio
-        
-        total_new_matches = 0
-        completed = 0
-        
-        for discord_id, account_info in linked_accounts.items():
-            try:
-                puuid = account_info['puuid']
-                riot_id = account_info['riot_id']
-                tagline = account_info['tagline']
-                
-                # Vérifier combien de matchs sont déjà en DB
-                existing_count = await bot.db.get_match_count(puuid)
-                
-                await interaction.edit_original_response(
-                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                            f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
+        @bot.tree.command(name="sync_all_history", description="[ADMIN] Récupère l'historique complet de tous les joueurs liés")
+        async def sync_all_history(interaction: discord.Interaction):
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+                return
+            
+            # VÉRIFICATION CRITIQUE DE LA DB
+            if not bot.db or not bot.db.pool:
+                await interaction.response.send_message(
+                    "❌ La base de données n'est pas initialisée. Attends quelques secondes que le bot soit complètement démarré, puis réessaye.",
+                    ephemeral=True
                 )
-                
-                # Sync complète
-                new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
-                total_new_matches += new_matches
-                completed += 1
-                
-                await interaction.edit_original_response(
-                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                            f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
-                            f"📊 Total: {total_new_matches} nouveaux matchs"
-                )
-                
-                # Petit délai entre chaque joueur
-                await asyncio.sleep(2)
-                
-            except Exception as e:
-                print(f"Erreur sync pour {discord_id}: {e}")
-                continue
-        
-        await interaction.edit_original_response(
-            content=f"✅ **Synchronisation terminée !**\n\n"
-                    f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
-                    f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
-                    f"🎉 Toutes les stats sont maintenant à jour !"
-        )
+                return
+            
+            await interaction.response.defer()
+            
+            linked_accounts = await bot.db.get_all_linked_accounts()
+            
+            if not linked_accounts:
+                await interaction.followup.send("❌ Aucun compte lié.")
+                return
+            
+            await interaction.followup.send(
+                f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
+                f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
+            )
+            
+            from bot import sync_player_full_history
+            import asyncio
+            
+            total_new_matches = 0
+            completed = 0
+            
+            for discord_id, account_info in linked_accounts.items():
+                try:
+                    puuid = account_info['puuid']
+                    riot_id = account_info['riot_id']
+                    tagline = account_info['tagline']
+                    
+                    # Vérifier combien de matchs sont déjà en DB
+                    existing_count = await bot.db.get_match_count(puuid)
+                    
+                    await interaction.edit_original_response(
+                        content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
+                                f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
+                    )
+                    
+                    # Sync complète
+                    new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
+                    total_new_matches += new_matches
+                    completed += 1
+                    
+                    await interaction.edit_original_response(
+                        content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
+                                f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
+                                f"📊 Total: {total_new_matches} nouveaux matchs"
+                    )
+                    
+                    # Petit délai entre chaque joueur
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    print(f"Erreur sync pour {discord_id}: {e}")
+                    continue
+            
+            await interaction.edit_original_response(
+                content=f"✅ **Synchronisation terminée !**\n\n"
+                        f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
+                        f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
+                        f"🎉 Toutes les stats sont maintenant à jour !"
+            )
     
     @bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
     @app_commands.describe(
@@ -863,5 +871,6 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+
 
 
