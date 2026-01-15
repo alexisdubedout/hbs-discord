@@ -26,16 +26,27 @@ class LoLBot(commands.Bot):
 bot = LoLBot()
 
 # === FULL HISTORY SYNC AVEC MILESTONES ===
+
 async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
     """
     Récupère l'historique complet des matchs d'un joueur pour la saison en cours
     """
-    if puuid in bot.syncing_players:
-        print(f"⚠️ Sync déjà en cours pour {riot_id}")
+    # VÉRIFICATION CRITIQUE DE LA DB AVANT DE COMMENCER
+    if not bot.db or not bot.db.pool:
+        error_msg = f"❌ Database non initialisée pour {riot_id}!"
+        print(error_msg)
+        if progress_callback:
+            try:
+                await progress_callback(
+                    f"❌ Erreur: Base de données non initialisée.\n"
+                    f"Attends quelques secondes que le bot soit complètement démarré."
+                )
+            except:
+                pass
         return 0
     
-    if not bot.db or not bot.db.pool:
-        print(f"❌ Database non initialisée pour {riot_id}!")
+    if puuid in bot.syncing_players:
+        print(f"⚠️ Sync déjà en cours pour {riot_id}")
         return 0
     
     bot.syncing_players.add(puuid)
@@ -83,6 +94,11 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
             
             for idx, match_id in enumerate(match_ids, 1):
                 print(f"\n  [{idx}/{len(match_ids)}] 🔍 Match: {match_id[:20]}...")
+                
+                # Vérifier à nouveau la DB avant chaque opération critique
+                if not bot.db or not bot.db.pool:
+                    print(f"  └─ ❌ DB perdue pendant la sync!")
+                    return new_matches
                 
                 try:
                     if await bot.db.match_exists(match_id, puuid):
@@ -152,7 +168,7 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         print(f"{'='*70}\n")
         
         # === VÉRIFICATION DES MILESTONES APRÈS LA SYNCHRO ===
-        if new_matches > 0:
+        if new_matches > 0 and bot.db and bot.db.pool:
             print(f"\n🏆 Vérification des milestones pour {riot_id}...")
             
             # Récupérer le discord_id depuis le puuid
@@ -614,4 +630,5 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
 
