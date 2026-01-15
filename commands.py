@@ -111,77 +111,77 @@ def register_commands(bot):
         else:
             await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
     
-        @bot.tree.command(name="sync_all_history", description="[ADMIN] Récupère l'historique complet de tous les joueurs liés")
-        async def sync_all_history(interaction: discord.Interaction):
-            if not interaction.user.guild_permissions.administrator:
-                await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
-                return
-            
-            # VÉRIFICATION CRITIQUE DE LA DB
-            if not bot.db or not bot.db.pool:
-                await interaction.response.send_message(
-                    "❌ La base de données n'est pas initialisée. Attends quelques secondes que le bot soit complètement démarré, puis réessaye.",
-                    ephemeral=True
+    @bot.tree.command(name="sync_all_history", description="[ADMIN] Récupère l'historique complet de tous les joueurs liés")
+    async def sync_all_history(interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+            return
+        
+        # VÉRIFICATION CRITIQUE DE LA DB
+        if not bot.db or not bot.db.pool:
+            await interaction.response.send_message(
+                "❌ La base de données n'est pas initialisée. Attends quelques secondes que le bot soit complètement démarré, puis réessaye.",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer()
+        
+        linked_accounts = await bot.db.get_all_linked_accounts()
+        
+        if not linked_accounts:
+            await interaction.followup.send("❌ Aucun compte lié.")
+            return
+        
+        await interaction.followup.send(
+            f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
+            f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
+        )
+        
+        from bot import sync_player_full_history
+        import asyncio
+        
+        total_new_matches = 0
+        completed = 0
+        
+        for discord_id, account_info in linked_accounts.items():
+            try:
+                puuid = account_info['puuid']
+                riot_id = account_info['riot_id']
+                tagline = account_info['tagline']
+                
+                # Vérifier combien de matchs sont déjà en DB
+                existing_count = await bot.db.get_match_count(puuid)
+                
+                await interaction.edit_original_response(
+                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
+                            f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
                 )
-                return
-            
-            await interaction.response.defer()
-            
-            linked_accounts = await bot.db.get_all_linked_accounts()
-            
-            if not linked_accounts:
-                await interaction.followup.send("❌ Aucun compte lié.")
-                return
-            
-            await interaction.followup.send(
-                f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
-                f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
-            )
-            
-            from bot import sync_player_full_history
-            import asyncio
-            
-            total_new_matches = 0
-            completed = 0
-            
-            for discord_id, account_info in linked_accounts.items():
-                try:
-                    puuid = account_info['puuid']
-                    riot_id = account_info['riot_id']
-                    tagline = account_info['tagline']
-                    
-                    # Vérifier combien de matchs sont déjà en DB
-                    existing_count = await bot.db.get_match_count(puuid)
-                    
-                    await interaction.edit_original_response(
-                        content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                                f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
-                    )
-                    
-                    # Sync complète
-                    new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
-                    total_new_matches += new_matches
-                    completed += 1
-                    
-                    await interaction.edit_original_response(
-                        content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                                f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
-                                f"📊 Total: {total_new_matches} nouveaux matchs"
-                    )
-                    
-                    # Petit délai entre chaque joueur
-                    await asyncio.sleep(2)
-                    
-                except Exception as e:
-                    print(f"Erreur sync pour {discord_id}: {e}")
-                    continue
-            
-            await interaction.edit_original_response(
-                content=f"✅ **Synchronisation terminée !**\n\n"
-                        f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
-                        f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
-                        f"🎉 Toutes les stats sont maintenant à jour !"
-            )
+                
+                # Sync complète
+                new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
+                total_new_matches += new_matches
+                completed += 1
+                
+                await interaction.edit_original_response(
+                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
+                            f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
+                            f"📊 Total: {total_new_matches} nouveaux matchs"
+                )
+                
+                # Petit délai entre chaque joueur
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                print(f"Erreur sync pour {discord_id}: {e}")
+                continue
+        
+        await interaction.edit_original_response(
+            content=f"✅ **Synchronisation terminée !**\n\n"
+                    f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
+                    f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
+                    f"🎉 Toutes les stats sont maintenant à jour !"
+        )
     
     @bot.tree.command(name="leaderboard", description="Affiche le classement du serveur")
     @app_commands.describe(
@@ -435,79 +435,79 @@ def register_commands(bot):
         
         await interaction.followup.send(embed=embed)
         
-        @bot.tree.command(name="random_teams", description="Génère 2 équipes aléatoires depuis le vocal")
-        async def random_teams(interaction: discord.Interaction):
-            if not interaction.user.voice:
-                await interaction.response.send_message("❌ Tu dois être dans un channel vocal!", ephemeral=True)
-                return
-            
-            voice_channel = interaction.user.voice.channel
-            members = [m for m in voice_channel.members if not m.bot]
-            
-            if len(members) < 2:
-                await interaction.response.send_message("❌ Pas assez de joueurs dans le vocal!", ephemeral=True)
-                return
-            
-            if len(members) > 10:
-                await interaction.response.send_message("❌ Trop de joueurs dans le vocal (max 10)!", ephemeral=True)
-                return
-            
-            await interaction.response.defer()
-            
-            random.shuffle(members)
-            
-            team_size = len(members) // 2
-            team1 = members[:team_size]
-            team2 = members[team_size:team_size*2]
-            
-            roles_pool = ROLES.copy()
-            random.shuffle(roles_pool)
-            
-            def assign_team(team):
-                assignments = []
-                available_roles = roles_pool.copy()
-                for member in team:
-                    if available_roles:
-                        role = available_roles.pop(0)
-                    else:
-                        role = random.choice(ROLES)
-                    champion = random.choice(CHAMPIONS)
-                    assignments.append((member, role, champion))
-                return assignments
-            
-            team1_assignments = assign_team(team1)
-            team2_assignments = assign_team(team2)
-            
-            embed = discord.Embed(
-                title="🎲 Teams Aléatoires",
-                color=discord.Color.blue(),
-                description=f"Généré depuis **{voice_channel.name}**"
+    @bot.tree.command(name="random_teams", description="Génère 2 équipes aléatoires depuis le vocal")
+    async def random_teams(interaction: discord.Interaction):
+        if not interaction.user.voice:
+            await interaction.response.send_message("❌ Tu dois être dans un channel vocal!", ephemeral=True)
+            return
+        
+        voice_channel = interaction.user.voice.channel
+        members = [m for m in voice_channel.members if not m.bot]
+        
+        if len(members) < 2:
+            await interaction.response.send_message("❌ Pas assez de joueurs dans le vocal!", ephemeral=True)
+            return
+        
+        if len(members) > 10:
+            await interaction.response.send_message("❌ Trop de joueurs dans le vocal (max 10)!", ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        random.shuffle(members)
+        
+        team_size = len(members) // 2
+        team1 = members[:team_size]
+        team2 = members[team_size:team_size*2]
+        
+        roles_pool = ROLES.copy()
+        random.shuffle(roles_pool)
+        
+        def assign_team(team):
+            assignments = []
+            available_roles = roles_pool.copy()
+            for member in team:
+                if available_roles:
+                    role = available_roles.pop(0)
+                else:
+                    role = random.choice(ROLES)
+                champion = random.choice(CHAMPIONS)
+                assignments.append((member, role, champion))
+            return assignments
+        
+        team1_assignments = assign_team(team1)
+        team2_assignments = assign_team(team2)
+        
+        embed = discord.Embed(
+            title="🎲 Teams Aléatoires",
+            color=discord.Color.blue(),
+            description=f"Généré depuis **{voice_channel.name}**"
+        )
+        
+        team1_text = ""
+        for member, role, champion in team1_assignments:
+            team1_text += f"**{role}**: {member.mention} - *{champion}*\n"
+        
+        embed.add_field(name="🔵 Team Bleue", value=team1_text, inline=True)
+        
+        team2_text = ""
+        for member, role, champion in team2_assignments:
+            team2_text += f"**{role}**: {member.mention} - *{champion}*\n"
+        
+        embed.add_field(name="🔴 Team Rouge", value=team2_text, inline=True)
+        
+        if len(members) % 2 != 0:
+            leftover = members[-1]
+            embed.add_field(
+                name="⚪ Joueur supplémentaire",
+                value=f"{leftover.mention}",
+                inline=False
             )
-            
-            team1_text = ""
-            for member, role, champion in team1_assignments:
-                team1_text += f"**{role}**: {member.mention} - *{champion}*\n"
-            
-            embed.add_field(name="🔵 Team Bleue", value=team1_text, inline=True)
-            
-            team2_text = ""
-            for member, role, champion in team2_assignments:
-                team2_text += f"**{role}**: {member.mention} - *{champion}*\n"
-            
-            embed.add_field(name="🔴 Team Rouge", value=team2_text, inline=True)
-            
-            if len(members) % 2 != 0:
-                leftover = members[-1]
-                embed.add_field(
-                    name="⚪ Joueur supplémentaire",
-                    value=f"{leftover.mention}",
-                    inline=False
-                )
-            
-            embed.set_footer(text="Good luck, have fun!")
-            embed.timestamp = discord.utils.utcnow()
-            
-            await interaction.followup.send(embed=embed)
+        
+        embed.set_footer(text="Good luck, have fun!")
+        embed.timestamp = discord.utils.utcnow()
+        
+        await interaction.followup.send(embed=embed)
     
     @bot.tree.command(name="stats", description="Affiche les statistiques détaillées d'un joueur")
     @app_commands.describe(
@@ -871,6 +871,7 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+
 
 
 
