@@ -318,7 +318,7 @@ async def check_rank_changes():
 
 @tasks.loop(minutes=30)
 async def sync_match_history():
-    """Synchronise l'historique des 5 derniers matchs toutes les 30 minutes et envoie le meilleur milestone en DM"""
+    """Synchronise l'historique des 5 derniers matchs toutes les 30 minutes et envoie les milestones"""
     if not bot.db.pool:
         print("⚠️ Pool DB non disponible pour sync_match_history")
         return
@@ -326,6 +326,8 @@ async def sync_match_history():
     print("🔄 Synchronisation rapide des matchs en cours...")
     linked_accounts = await bot.db.get_all_linked_accounts()
     total_new_matches = 0
+    
+    from config import get_milestone_message
     
     for discord_id, account_info in linked_accounts.items():
         try:
@@ -369,53 +371,40 @@ async def sync_match_history():
                             # 1. Total deaths
                             milestones_to_check.append({
                                 'type': 'deaths',
-                                'value': all_player_stats['total_deaths'],
-                                'name': f"{all_player_stats['total_deaths']} morts au total",
-                                'unit': 'morts'
+                                'value': all_player_stats['total_deaths']
                             })
                             
                             # 2. Total kills
                             milestones_to_check.append({
                                 'type': 'kills',
-                                'value': all_player_stats['total_kills'],
-                                'name': f"{all_player_stats['total_kills']} kills au total",
-                                'unit': 'kills'
+                                'value': all_player_stats['total_kills']
                             })
                             
                             # 3. Total games
                             milestones_to_check.append({
                                 'type': 'games',
-                                'value': all_player_stats['total_games'],
-                                'name': f"{all_player_stats['total_games']} parties jouées",
-                                'unit': 'parties'
+                                'value': all_player_stats['total_games']
                             })
                             
                             # 4. Total wins
                             milestones_to_check.append({
                                 'type': 'wins',
-                                'value': all_player_stats['wins'],
-                                'name': f"{all_player_stats['wins']} victoires",
-                                'unit': 'victoires'
+                                'value': all_player_stats['wins']
                             })
                             
                             # 5. Total losses
                             milestones_to_check.append({
                                 'type': 'losses',
-                                'value': all_player_stats['losses'],
-                                'name': f"{all_player_stats['losses']} défaites",
-                                'unit': 'défaites'
+                                'value': all_player_stats['losses']
                             })
                             
                             # 6. Win/Lose streaks
                             streak_type, streak_count = await bot.db.get_current_streak(puuid)
                             if streak_type and streak_count >= 5:
                                 streak_milestone_type = 'win_streak' if streak_type == 'win' else 'lose_streak'
-                                streak_name = f"{streak_count} victoires consécutives" if streak_type == 'win' else f"{streak_count} défaites consécutives"
                                 milestones_to_check.append({
                                     'type': streak_milestone_type,
-                                    'value': streak_count,
-                                    'name': streak_name,
-                                    'unit': 'en série'
+                                    'value': streak_count
                                 })
                             
                             # 7. Champion-specific games
@@ -425,8 +414,6 @@ async def sync_match_history():
                                     milestones_to_check.append({
                                         'type': 'champion_games',
                                         'value': game_count,
-                                        'name': f"{game_count} parties avec {champion}",
-                                        'unit': f'parties ({champion})',
                                         'extra_data': champion
                                     })
                             
@@ -446,29 +433,32 @@ async def sync_match_history():
                                 if reached and reached > best_value:
                                     best_value = reached
                                     best_milestone = {
-                                        'name': milestone_data['name'],
+                                        'type': milestone_data['type'],
                                         'value': reached,
-                                        'unit': milestone_data['unit']
+                                        'extra': extra
                                     }
                             
-                            # Envoyer uniquement le meilleur milestone
+                            # Envoyer uniquement le meilleur milestone avec le message personnalisé
                             if best_milestone:
                                 try:
-                                    embed = discord.Embed(
-                                        title="🏆 Nouveau Milestone !",
-                                        description=f"Félicitations {member.display_name} !\n"
-                                                    f"Tu as atteint un nouveau record personnel : **{best_milestone['name']}**",
-                                        color=discord.Color.green()
+                                    # Récupérer le message personnalisé depuis config.py
+                                    player_name = member.display_name
+                                    custom_message = get_milestone_message(
+                                        best_milestone['type'],
+                                        best_milestone['value'],
+                                        player_name,
+                                        best_milestone.get('extra')
                                     )
-                                    embed.add_field(
-                                        name="Détail", 
-                                        value=f"{best_milestone['value']} {best_milestone.get('unit', '')}", 
-                                        inline=False
-                                    )
-                                    embed.set_footer(text="Ce message est automatique • Seul ton meilleur milestone est envoyé")
-                                    embed.timestamp = discord.utils.utcnow()
                                     
-                                    await member.send(embed=embed)
+                                    if custom_message:
+                                        embed = discord.Embed(
+                                            title="🏆 Nouveau Milestone !",
+                                            description=custom_message,
+                                            color=discord.Color.green()
+                                        )
+                                        embed.timestamp = discord.utils.utcnow()
+                                        
+                                        await member.send(embed=embed)
                                 except discord.Forbidden:
                                     print(f"Impossible de DM {member.display_name}")
                                 except Exception as e:
