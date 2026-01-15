@@ -25,7 +25,7 @@ class LoLBot(commands.Bot):
 
 bot = LoLBot()
 
-# === FULL HISTORY SYNC ===
+# === FULL HISTORY SYNC AVEC MILESTONES ===
 async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=None):
     """
     Récupère l'historique complet des matchs d'un joueur pour la saison en cours
@@ -150,6 +150,144 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
         print(f"📊 Total vérifié: {total_checked} matchs")
         print(f"✅ Nouveaux matchs: {new_matches}")
         print(f"{'='*70}\n")
+        
+        # === VÉRIFICATION DES MILESTONES APRÈS LA SYNCHRO ===
+        if new_matches > 0:
+            print(f"\n🏆 Vérification des milestones pour {riot_id}...")
+            
+            # Récupérer le discord_id depuis le puuid
+            linked_accounts = await bot.db.get_all_linked_accounts()
+            discord_id = None
+            for did, account_info in linked_accounts.items():
+                if account_info['puuid'] == puuid:
+                    discord_id = did
+                    break
+            
+            if not discord_id:
+                print(f"⚠️ Discord ID introuvable pour {riot_id}")
+                return new_matches
+            
+            # Récupérer le membre Discord
+            member = None
+            for guild in bot.guilds:
+                member = guild.get_member(int(discord_id))
+                if member:
+                    break
+            
+            if not member:
+                print(f"⚠️ Membre Discord introuvable pour {riot_id}")
+                return new_matches
+            
+            try:
+                from config import get_milestone_message
+                
+                # Récupérer les stats complètes du joueur
+                all_player_stats = await bot.db.get_player_stats_summary(puuid)
+                
+                if all_player_stats:
+                    milestones_to_check = []
+                    
+                    # 1. Total deaths
+                    milestones_to_check.append({
+                        'type': 'deaths',
+                        'value': all_player_stats['total_deaths'],
+                        'extra_data': None
+                    })
+                    
+                    # 2. Total kills
+                    milestones_to_check.append({
+                        'type': 'kills',
+                        'value': all_player_stats['total_kills'],
+                        'extra_data': None
+                    })
+                    
+                    # 3. Total games
+                    milestones_to_check.append({
+                        'type': 'games',
+                        'value': all_player_stats['total_games'],
+                        'extra_data': None
+                    })
+                    
+                    # 4. Total wins
+                    milestones_to_check.append({
+                        'type': 'wins',
+                        'value': all_player_stats['wins'],
+                        'extra_data': None
+                    })
+                    
+                    # 5. Total losses
+                    milestones_to_check.append({
+                        'type': 'losses',
+                        'value': all_player_stats['losses'],
+                        'extra_data': None
+                    })
+                    
+                    # 6. Win/Lose streaks
+                    streak_type, streak_count = await bot.db.get_current_streak(puuid)
+                    if streak_type and streak_count >= 5:
+                        streak_milestone_type = 'win_streak' if streak_type == 'win' else 'lose_streak'
+                        milestones_to_check.append({
+                            'type': streak_milestone_type,
+                            'value': streak_count,
+                            'extra_data': None
+                        })
+                    
+                    # 7. Champion-specific games
+                    champion_stats = await bot.db.get_champion_stats(puuid)
+                    for champion, game_count in champion_stats.items():
+                        if game_count >= 25:
+                            milestones_to_check.append({
+                                'type': 'champion_games',
+                                'value': game_count,
+                                'extra_data': champion
+                            })
+                    
+                    # Vérifier et envoyer tous les milestones
+                    milestones_sent = 0
+                    for milestone_data in milestones_to_check:
+                        extra = milestone_data.get('extra_data')
+                        reached = await bot.db.check_and_save_milestone(
+                            puuid,
+                            milestone_data['type'],
+                            milestone_data['value'],
+                            extra
+                        )
+                        
+                        if reached:
+                            try:
+                                player_name = member.display_name
+                                custom_message = get_milestone_message(
+                                    milestone_data['type'],
+                                    reached,
+                                    player_name,
+                                    extra
+                                )
+                                
+                                if custom_message:
+                                    embed = discord.Embed(
+                                        title="🏆 Nouveau Milestone !",
+                                        description=custom_message,
+                                        color=discord.Color.green()
+                                    )
+                                    embed.timestamp = discord.utils.utcnow()
+                                    
+                                    await member.send(embed=embed)
+                                    milestones_sent += 1
+                                    print(f"  └─ 📨 Milestone envoyé: {milestone_data['type']} = {reached}")
+                            except discord.Forbidden:
+                                print(f"  └─ ❌ Impossible d'envoyer DM à {member.display_name}")
+                            except Exception as e:
+                                print(f"  └─ ❌ Erreur envoi milestone: {e}")
+                    
+                    if milestones_sent > 0:
+                        print(f"✅ {milestones_sent} milestone(s) envoyé(s)")
+                    else:
+                        print(f"ℹ️ Aucun nouveau milestone")
+                        
+            except Exception as e:
+                print(f"❌ Erreur vérification milestones: {e}")
+                import traceback
+                traceback.print_exc()
         
         return new_matches
         
@@ -476,3 +614,4 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
