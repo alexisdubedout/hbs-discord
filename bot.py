@@ -456,11 +456,8 @@ async def check_rank_changes():
                             color=discord.Color.gold() if is_promotion else discord.Color.orange(),
                             description=f"{member.mention} a changé de pallier !"
                         )
-                        embed.add_field(name="Ancien rang", value=old_rank_str, inline=True)
-                        embed.add_field(name="➡️", value="", inline=True)
                         embed.add_field(name="Nouveau rang", value=rank_str, inline=True)
                         embed.set_footer(text="Félicitations ! 🎉" if is_promotion else "Ne lâche rien, tu vas remonter ! 💪")
-                        embed.timestamp = discord.utils.utcnow()
 
                         try:
                             await announcement_channel.send(embed=embed)
@@ -630,5 +627,6 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
 
 
