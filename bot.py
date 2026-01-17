@@ -451,10 +451,12 @@ async def check_rank_changes():
                         }
                         is_promotion = tier_values.get(tier, 0) > tier_values.get(old_tier, 0)
 
+                        player_name = member.mention if member else f"**{account_info['riot_id']}#{account_info['tagline']}**"
+                        
                         embed = discord.Embed(
                             title="🎊 CHANGEMENT DE RANG !" if is_promotion else "📉 Changement de rang",
                             color=discord.Color.gold() if is_promotion else discord.Color.orange(),
-                            description=f"{member.mention} a changé de pallier !"
+                            description=f"{player_name} a changé de pallier !"  # <--- Remplace member.mention par player_name
                         )
                         embed.add_field(name="Nouveau rang", value=rank_str, inline=True)
                         embed.set_footer(text="Félicitations ! 🎉" if is_promotion else "Ne lâche rien, tu vas remonter ! 💪")
@@ -627,6 +629,7 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
 
 
 
