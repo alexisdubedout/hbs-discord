@@ -280,8 +280,25 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
                                 )
                                 
                                 if custom_message:
+                                    # Créer un titre dynamique selon le type
+                                    milestone_titles = {
+                                        'deaths': f"💀 {reached} Morts !",
+                                        'kills': f"⚔️ {reached} Kills !",
+                                        'games': f"🎮 {reached} Games !",
+                                        'wins': f"🏆 {reached} Victoires !",
+                                        'losses': f"💔 {reached} Défaites",
+                                        'win_streak': f"🔥 Série de {reached} Victoires !",
+                                        'lose_streak': f"😰 Série de {reached} Défaites",
+                                        'champion_games': f"🎭 {reached} Games sur {extra} !"
+                                    }
+                                    
+                                    title = milestone_titles.get(
+                                        milestone_data['type'], 
+                                        f"🏆 Nouveau Milestone : {reached}"
+                                    )
+                                    
                                     embed = discord.Embed(
-                                        title="🏆 Nouveau Milestone !",
+                                        title=title,
                                         description=custom_message,
                                         color=discord.Color.green()
                                     )
@@ -604,8 +621,25 @@ async def sync_match_history():
                                     )
                                     
                                     if custom_message:
+                                        # Créer un titre dynamique selon le type
+                                        milestone_titles = {
+                                            'deaths': f"💀 {reached} Morts !",
+                                            'kills': f"⚔️ {reached} Kills !",
+                                            'games': f"🎮 {reached} Games !",
+                                            'wins': f"🏆 {reached} Victoires !",
+                                            'losses': f"💔 {reached} Défaites",
+                                            'win_streak': f"🔥 Série de {reached} Victoires !",
+                                            'lose_streak': f"😰 Série de {reached} Défaites",
+                                            'champion_games': f"🎭 {reached} Games sur {extra} !"
+                                        }
+                                        
+                                        title = milestone_titles.get(
+                                            milestone_data['type'], 
+                                            f"🏆 Nouveau Milestone : {reached}"
+                                        )
+                                        
                                         embed = discord.Embed(
-                                            title="🏆 Nouveau Milestone !",
+                                            title=title,
                                             description=custom_message,
                                             color=discord.Color.green()
                                         )
@@ -629,6 +663,7 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
 
 
 
