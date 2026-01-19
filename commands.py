@@ -358,8 +358,8 @@ def register_commands(bot):
             description=f"**Critère:** {critere_names[critere]}"
         )
         
-        # Limiter à 10 joueurs pour éviter un embed trop long
-        top_players = players_data[:10]
+        # Limiter à 15 joueurs pour éviter un embed trop long
+        top_players = players_data[:15]
         
         for i, player in enumerate(top_players, 1):
             # Médailles pour le top 3
@@ -871,6 +871,7 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
+
 
 
 
