@@ -71,16 +71,32 @@ class Database:
                     notified_at TIMESTAMP DEFAULT NOW()
                 )
             ''')
+            # Migration rank_history pour supporter plusieurs comptes
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS rank_history (
                     discord_id TEXT,
+                    puuid TEXT NOT NULL,
                     tier TEXT NOT NULL,
                     rank TEXT NOT NULL,
                     lp INTEGER NOT NULL,
                     timestamp TIMESTAMP DEFAULT NOW(),
-                    PRIMARY KEY (discord_id, timestamp)
+                    PRIMARY KEY (discord_id, puuid, timestamp)
                 )
             ''')
+            
+            # Ajouter la colonne puuid si elle n'existe pas (migration)
+            puuid_column_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'rank_history' 
+                    AND column_name = 'puuid'
+                )
+            """)
+            
+            if not puuid_column_exists:
+                print("🔄 Migration: Ajout de puuid à rank_history...")
+                await conn.execute("ALTER TABLE rank_history ADD COLUMN puuid TEXT")
+                print("✅ Migration rank_history terminée")
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS match_stats (
                     match_id TEXT NOT NULL,
@@ -337,27 +353,34 @@ class Database:
                 discord_id
             )
     
-    async def get_last_rank(self, discord_id: str):
-        """Récupère le dernier rang connu"""
+    async def get_last_rank(self, discord_id: str, puuid: str = None):
+        """Récupère le dernier rang connu pour un compte spécifique"""
         if not self.pool:
             return None
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT tier, rank, lp FROM rank_history WHERE discord_id = $1 ORDER BY timestamp DESC LIMIT 1',
-                discord_id
-            )
+            if puuid:
+                row = await conn.fetchrow(
+                    'SELECT tier, rank, lp FROM rank_history WHERE discord_id = $1 AND puuid = $2 ORDER BY timestamp DESC LIMIT 1',
+                    discord_id, puuid
+                )
+            else:
+                # Fallback pour compatibilité (premier compte trouvé)
+                row = await conn.fetchrow(
+                    'SELECT tier, rank, lp FROM rank_history WHERE discord_id = $1 ORDER BY timestamp DESC LIMIT 1',
+                    discord_id
+                )
             if row:
                 return {'tier': row['tier'], 'rank': row['rank'], 'lp': row['lp']}
             return None
     
-    async def save_rank(self, discord_id: str, tier: str, rank: str, lp: int):
-        """Sauvegarde un nouveau rang dans l'historique"""
+    async def save_rank(self, discord_id: str, tier: str, rank: str, lp: int, puuid: str):
+        """Sauvegarde un nouveau rang dans l'historique pour un compte spécifique"""
         if not self.pool:
             return
         async with self.pool.acquire() as conn:
             await conn.execute(
-                'INSERT INTO rank_history (discord_id, tier, rank, lp) VALUES ($1, $2, $3, $4)',
-                discord_id, tier, rank, lp
+                'INSERT INTO rank_history (discord_id, puuid, tier, rank, lp) VALUES ($1, $2, $3, $4, $5)',
+                discord_id, puuid, tier, rank, lp
             )
     
     async def match_exists(self, match_id: str, puuid: str):
