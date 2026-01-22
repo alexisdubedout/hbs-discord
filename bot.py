@@ -407,7 +407,6 @@ async def on_voice_state_update(member, before, after):
             await send_link_reminder(member)
 
 # === TASKS 30 MINUTES ===
-@tasks.loop(minutes=30)
 async def check_rank_changes():
     """Vérifie les changements de rang toutes les 30 minutes"""
     if not bot.db.pool:
@@ -415,76 +414,90 @@ async def check_rank_changes():
 
     linked_accounts = await bot.db.get_all_linked_accounts()
 
-    for discord_id, account_info in linked_accounts.items():
-        try:
-            stats = await get_ranked_stats(account_info['puuid'])
-            if not stats:
-                continue
+    # NOUVELLE STRUCTURE: linked_accounts est maintenant {discord_id: [list of accounts]}
+    for discord_id, accounts_list in linked_accounts.items():
+        for account_info in accounts_list:  # Boucle sur chaque compte
+            try:
+                puuid = account_info['puuid']
+                riot_id = account_info['riot_id']
+                tagline = account_info['tagline']
+                
+                stats = await get_ranked_stats(puuid)
+                if not stats:
+                    continue
 
-            tier = stats['tier']
-            rank = stats['rank']
-            lp = stats['leaguePoints']
-            last_rank = await bot.db.get_last_rank(discord_id)
-            if not last_rank:
-                await bot.db.save_rank(discord_id, tier, rank, lp)
-                continue
+                tier = stats['tier']
+                rank = stats['rank']
+                lp = stats['leaguePoints']
+                
+                # Clé unique pour rank_history basée sur discord_id + puuid
+                # ATTENTION: Il faut modifier la table rank_history pour inclure le puuid
+                # OU créer une clé composite discord_id + account_index
+                
+                last_rank = await bot.db.get_last_rank(discord_id, puuid)  # MODIFIÉ
+                if not last_rank:
+                    await bot.db.save_rank(discord_id, tier, rank, lp, puuid)  # MODIFIÉ
+                    continue
 
-            old_tier = last_rank['tier']
-            old_rank = last_rank['rank']
-            old_lp = last_rank['lp']
-            tier_changed = old_tier != tier
+                old_tier = last_rank['tier']
+                old_rank = last_rank['rank']
+                old_lp = last_rank['lp']
+                tier_changed = old_tier != tier
 
-            if tier_changed:
-                await bot.db.save_rank(discord_id, tier, rank, lp)
-                for guild in bot.guilds:
-                    member = guild.get_member(int(discord_id))
-                    if not member:
-                        continue
+                if tier_changed:
+                    await bot.db.save_rank(discord_id, tier, rank, lp, puuid)  # MODIFIÉ
+                    
+                    for guild in bot.guilds:
+                        member = guild.get_member(int(discord_id))
+                        if not member:
+                            continue
 
-                    announcement_channel = None
-                    for channel in guild.text_channels:
-                        if channel.name.lower() in ['général', 'general', 'annonces', 'announcements', 'lobby', 'tchat']:
-                            announcement_channel = channel
-                            break
-                    if not announcement_channel:
-                        announcement_channel = guild.text_channels[0] if guild.text_channels else None
+                        announcement_channel = None
+                        for channel in guild.text_channels:
+                            if channel.name.lower() in ['général', 'general', 'annonces', 'announcements', 'lobby', 'tchat']:
+                                announcement_channel = channel
+                                break
+                        if not announcement_channel:
+                            announcement_channel = guild.text_channels[0] if guild.text_channels else None
 
-                    if announcement_channel:
-                        emoji = RANK_EMOJIS.get(tier, "❓")
-                        old_emoji = RANK_EMOJIS.get(old_tier, "❓")
-                        if tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
-                            rank_str = f"{emoji} **{tier.title()}** - {lp} LP"
-                        else:
-                            rank_str = f"{emoji} **{tier.title()} {rank}** - {lp} LP"
-                        if old_tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
-                            old_rank_str = f"{old_emoji} {old_tier.title()}"
-                        else:
-                            old_rank_str = f"{old_emoji} {old_tier.title()} {old_rank}"
+                        if announcement_channel:
+                            emoji = RANK_EMOJIS.get(tier, "❓")
+                            old_emoji = RANK_EMOJIS.get(old_tier, "❓")
+                            if tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+                                rank_str = f"{emoji} **{tier.title()}** - {lp} LP"
+                            else:
+                                rank_str = f"{emoji} **{tier.title()} {rank}** - {lp} LP"
+                            if old_tier in ['MASTER', 'GRANDMASTER', 'CHALLENGER']:
+                                old_rank_str = f"{old_emoji} {old_tier.title()}"
+                            else:
+                                old_rank_str = f"{old_emoji} {old_tier.title()} {old_rank}"
 
-                        tier_values = {
-                            "IRON": 0, "BRONZE": 1, "SILVER": 2, "GOLD": 3,
-                            "PLATINUM": 4, "EMERALD": 5, "DIAMOND": 6,
-                            "MASTER": 7, "GRANDMASTER": 8, "CHALLENGER": 9
-                        }
-                        is_promotion = tier_values.get(tier, 0) > tier_values.get(old_tier, 0)
+                            tier_values = {
+                                "IRON": 0, "BRONZE": 1, "SILVER": 2, "GOLD": 3,
+                                "PLATINUM": 4, "EMERALD": 5, "DIAMOND": 6,
+                                "MASTER": 7, "GRANDMASTER": 8, "CHALLENGER": 9
+                            }
+                            is_promotion = tier_values.get(tier, 0) > tier_values.get(old_tier, 0)
 
-                        player_name = member.mention if member else f"**{account_info['riot_id']}#{account_info['tagline']}**"
-                        
-                        embed = discord.Embed(
-                            title="🎊 CHANGEMENT DE RANG !" if is_promotion else "📉 Changement de rang",
-                            color=discord.Color.gold() if is_promotion else discord.Color.orange(),
-                            description=f"{player_name} a changé de pallier !"  # <--- Remplace member.mention par player_name
-                        )
-                        embed.add_field(name="Nouveau rang", value=rank_str, inline=True)
-                        embed.set_footer(text="Félicitations ! 🎉" if is_promotion else "Ne lâche rien, tu vas remonter ! 💪")
+                            # MODIFIÉ: Afficher le compte concerné
+                            player_name = member.mention if member else f"**{riot_id}#{tagline}**"
+                            account_display = f"{riot_id}#{tagline}"
+                            
+                            embed = discord.Embed(
+                                title="🎊 CHANGEMENT DE RANG !" if is_promotion else "📉 Changement de rang",
+                                color=discord.Color.gold() if is_promotion else discord.Color.orange(),
+                                description=f"{player_name} a changé de pallier !\n*Compte: {account_display}*"
+                            )
+                            embed.add_field(name="Nouveau rang", value=rank_str, inline=True)
+                            embed.set_footer(text="Félicitations ! 🎉" if is_promotion else "Ne lâche rien, tu vas remonter ! 💪")
 
-                        try:
-                            await announcement_channel.send(embed=embed)
-                        except discord.Forbidden:
-                            print(f"Pas la permission d'envoyer dans {announcement_channel.name}")
+                            try:
+                                await announcement_channel.send(embed=embed)
+                            except discord.Forbidden:
+                                print(f"Pas la permission d'envoyer dans {announcement_channel.name}")
 
-        except Exception as e:
-            print(f"Erreur check_rank_changes pour {discord_id}: {e}")
+            except Exception as e:
+                print(f"Erreur check_rank_changes pour {account_info.get('riot_id', 'unknown')}: {e}")
 
 @tasks.loop(minutes=30)
 async def sync_match_history():
@@ -499,161 +512,130 @@ async def sync_match_history():
     
     from config import get_milestone_message
     
-    for discord_id, account_info in linked_accounts.items():
-        try:
-            puuid = account_info['puuid']
-            if puuid in bot.syncing_players:
-                continue
-            
-            match_ids = await get_match_list(puuid, start=0, count=5)
-            if not match_ids:
-                continue
-            
-            # Récupérer le membre Discord pour le DM
-            member = None
-            for guild in bot.guilds:
-                member = guild.get_member(int(discord_id))
-                if member:
-                    break
-            
-            for match_id in match_ids:
-                if await bot.db.match_exists(match_id, puuid):
+    # MODIFIÉ: Nouvelle structure
+    for discord_id, accounts_list in linked_accounts.items():
+        for account_info in accounts_list:
+            try:
+                puuid = account_info['puuid']
+                if puuid in bot.syncing_players:
                     continue
                 
-                await asyncio.sleep(0.5)
-                match_data = await get_match_details(match_id)
-                if not match_data:
+                match_ids = await get_match_list(puuid, start=0, count=5)
+                if not match_ids:
                     continue
                 
-                stats = extract_player_stats(match_data, puuid)
-                if stats:
-                    await bot.db.save_match_stats(match_id, puuid, stats)
-                    total_new_matches += 1
-                    
-                    # === CHECK MILESTONES ET ENVOI DM ===
+                # Récupérer le membre Discord pour le DM
+                member = None
+                for guild in bot.guilds:
+                    member = guild.get_member(int(discord_id))
                     if member:
-                        # Récupérer les stats complètes du joueur pour calculer les milestones
-                        all_player_stats = await bot.db.get_player_stats_summary(puuid)
+                        break
+                
+                for match_id in match_ids:
+                    if await bot.db.match_exists(match_id, puuid):
+                        continue
+                    
+                    await asyncio.sleep(0.5)
+                    match_data = await get_match_details(match_id)
+                    if not match_data:
+                        continue
+                    
+                    stats = extract_player_stats(match_data, puuid)
+                    if stats:
+                        await bot.db.save_match_stats(match_id, puuid, stats)
+                        total_new_matches += 1
                         
-                        if all_player_stats:
-                            milestones_to_check = []
+                        # === CHECK MILESTONES (reste identique) ===
+                        if member:
+                            all_player_stats = await bot.db.get_player_stats_summary(puuid)
                             
-                            # 1. Total deaths
-                            milestones_to_check.append({
-                                'type': 'deaths',
-                                'value': all_player_stats['total_deaths']
-                            })
-                            
-                            # 2. Total kills
-                            milestones_to_check.append({
-                                'type': 'kills',
-                                'value': all_player_stats['total_kills']
-                            })
-                            
-                            # 3. Total games
-                            milestones_to_check.append({
-                                'type': 'games',
-                                'value': all_player_stats['total_games']
-                            })
-                            
-                            # 4. Total wins
-                            milestones_to_check.append({
-                                'type': 'wins',
-                                'value': all_player_stats['wins']
-                            })
-                            
-                            # 5. Total losses
-                            milestones_to_check.append({
-                                'type': 'losses',
-                                'value': all_player_stats['losses']
-                            })
-                            
-                            # 6. Win/Lose streaks
-                            streak_type, streak_count = await bot.db.get_current_streak(puuid)
-                            if streak_type and streak_count >= 5:
-                                streak_milestone_type = 'win_streak' if streak_type == 'win' else 'lose_streak'
-                                milestones_to_check.append({
-                                    'type': streak_milestone_type,
-                                    'value': streak_count
-                                })
-                            
-                            # 7. Champion-specific games
-                            champion_stats = await bot.db.get_champion_stats(puuid)
-                            for champion, game_count in champion_stats.items():
-                                if game_count >= 25:  # Seuil minimum
-                                    milestones_to_check.append({
-                                        'type': 'champion_games',
-                                        'value': game_count,
-                                        'extra_data': champion
-                                    })
-                            
-                            # Vérifier tous les milestones et garder le meilleur
-                            best_milestone = None
-                            best_value = 0
-                            
-                            for milestone_data in milestones_to_check:
-                                extra = milestone_data.get('extra_data')
-                                reached = await bot.db.check_and_save_milestone(
-                                    puuid,
-                                    milestone_data['type'],
-                                    milestone_data['value'],
-                                    extra
-                                )
+                            if all_player_stats:
+                                milestones_to_check = []
                                 
-                                if reached and reached > best_value:
-                                    best_value = reached
-                                    best_milestone = {
-                                        'type': milestone_data['type'],
-                                        'value': reached,
-                                        'extra': extra
-                                    }
-                            
-                            # Envoyer uniquement le meilleur milestone avec le message personnalisé
-                            if best_milestone:
-                                try:
-                                    # Récupérer le message personnalisé depuis config.py
-                                    player_name = member.display_name
-                                    custom_message = get_milestone_message(
-                                        best_milestone['type'],
-                                        best_milestone['value'],
-                                        player_name,
-                                        best_milestone.get('extra')
+                                milestones_to_check.append({'type': 'deaths', 'value': all_player_stats['total_deaths']})
+                                milestones_to_check.append({'type': 'kills', 'value': all_player_stats['total_kills']})
+                                milestones_to_check.append({'type': 'games', 'value': all_player_stats['total_games']})
+                                milestones_to_check.append({'type': 'wins', 'value': all_player_stats['wins']})
+                                milestones_to_check.append({'type': 'losses', 'value': all_player_stats['losses']})
+                                
+                                streak_type, streak_count = await bot.db.get_current_streak(puuid)
+                                if streak_type and streak_count >= 5:
+                                    streak_milestone_type = 'win_streak' if streak_type == 'win' else 'lose_streak'
+                                    milestones_to_check.append({'type': streak_milestone_type, 'value': streak_count})
+                                
+                                champion_stats = await bot.db.get_champion_stats(puuid)
+                                for champion, game_count in champion_stats.items():
+                                    if game_count >= 25:
+                                        milestones_to_check.append({
+                                            'type': 'champion_games',
+                                            'value': game_count,
+                                            'extra_data': champion
+                                        })
+                                
+                                best_milestone = None
+                                best_value = 0
+                                
+                                for milestone_data in milestones_to_check:
+                                    extra = milestone_data.get('extra_data')
+                                    reached = await bot.db.check_and_save_milestone(
+                                        puuid,
+                                        milestone_data['type'],
+                                        milestone_data['value'],
+                                        extra
                                     )
                                     
-                                    if custom_message:
-                                        # Créer un titre dynamique selon le type
-                                        milestone_titles = {
-                                            'deaths': f"💀 {reached} Morts !",
-                                            'kills': f"⚔️ {reached} Kills !",
-                                            'games': f"🎮 {reached} Games !",
-                                            'wins': f"🏆 {reached} Victoires !",
-                                            'losses': f"💔 {reached} Défaites",
-                                            'win_streak': f"🔥 Série de {reached} Victoires !",
-                                            'lose_streak': f"😰 Série de {reached} Défaites",
-                                            'champion_games': f"🎭 {reached} Games sur {extra} !"
+                                    if reached and reached > best_value:
+                                        best_value = reached
+                                        best_milestone = {
+                                            'type': milestone_data['type'],
+                                            'value': reached,
+                                            'extra': extra
                                         }
-                                        
-                                        title = milestone_titles.get(
-                                            milestone_data['type'], 
-                                            f"🏆 Nouveau Milestone : {reached}"
+                                
+                                if best_milestone:
+                                    try:
+                                        player_name = member.display_name
+                                        custom_message = get_milestone_message(
+                                            best_milestone['type'],
+                                            best_milestone['value'],
+                                            player_name,
+                                            best_milestone.get('extra')
                                         )
                                         
-                                        embed = discord.Embed(
-                                            title=title,
-                                            description=custom_message,
-                                            color=discord.Color.green()
-                                        )
-                                        embed.timestamp = discord.utils.utcnow()
-                                        
-                                        await member.send(embed=embed)
-                                except discord.Forbidden:
-                                    print(f"Impossible de DM {member.display_name}")
-                                except Exception as e:
-                                    print(f"Erreur en DM milestone pour {member.display_name}: {e}")
-            
-            await asyncio.sleep(1)
-        except Exception as e:
-            print(f"Erreur sync_match_history pour {discord_id}: {e}")
+                                        if custom_message:
+                                            # Créer un titre dynamique selon le type
+                                            milestone_titles = {
+                                                'deaths': f"💀 {best_milestone['value']} Morts !",
+                                                'kills': f"⚔️ {best_milestone['value']} Kills !",
+                                                'games': f"🎮 {best_milestone['value']} Games !",
+                                                'wins': f"🏆 {best_milestone['value']} Victoires !",
+                                                'losses': f"💔 {best_milestone['value']} Défaites",
+                                                'win_streak': f"🔥 Série de {best_milestone['value']} Victoires !",
+                                                'lose_streak': f"😰 Série de {best_milestone['value']} Défaites",
+                                                'champion_games': f"🎭 {best_milestone['value']} Games sur {best_milestone.get('extra')} !"
+                                            }
+                                            
+                                            title = milestone_titles.get(
+                                                best_milestone['type'], 
+                                                f"🏆 Nouveau Milestone : {best_milestone['value']}"
+                                            )
+                                            
+                                            embed = discord.Embed(
+                                                title=title,
+                                                description=custom_message,
+                                                color=discord.Color.green()
+                                            )
+                                            embed.timestamp = discord.utils.utcnow()
+                                            
+                                            await member.send(embed=embed)
+                                    except discord.Forbidden:
+                                        print(f"Impossible de DM {member.display_name}")
+                                    except Exception as e:
+                                        print(f"Erreur en DM milestone pour {member.display_name}: {e}")
+                
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(f"Erreur sync_match_history pour {account_info.get('riot_id', 'unknown')}: {e}")
     
     if total_new_matches > 0:
         print(f"✅ {total_new_matches} nouveaux matchs enregistrés")
@@ -663,6 +645,7 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
+
 
 
 
