@@ -20,14 +20,51 @@ class Database:
     async def init_tables(self):
         """Crée les tables si elles n'existent pas"""
         async with self.pool.acquire() as conn:
+            # === MIGRATION: Ajouter account_index à linked_accounts ===
+            # 1. Vérifier si la colonne existe déjà
+            column_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'linked_accounts' 
+                    AND column_name = 'account_index'
+                )
+            """)
+            
+            if not column_exists:
+                print("🔄 Migration: Ajout de account_index à linked_accounts...")
+                
+                # 2. Supprimer l'ancienne PRIMARY KEY
+                await conn.execute("""
+                    ALTER TABLE linked_accounts 
+                    DROP CONSTRAINT IF EXISTS linked_accounts_pkey
+                """)
+                
+                # 3. Ajouter la colonne account_index avec valeur par défaut 1
+                await conn.execute("""
+                    ALTER TABLE linked_accounts 
+                    ADD COLUMN account_index INTEGER DEFAULT 1
+                """)
+                
+                # 4. Créer la nouvelle PRIMARY KEY composite
+                await conn.execute("""
+                    ALTER TABLE linked_accounts 
+                    ADD PRIMARY KEY (discord_id, account_index)
+                """)
+                
+                print("✅ Migration terminée: account_index ajouté")
+            
+            # Créer la table si elle n'existe pas (pour les nouvelles installations)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS linked_accounts (
-                    discord_id TEXT PRIMARY KEY,
+                    discord_id TEXT NOT NULL,
                     riot_id TEXT NOT NULL,
                     tagline TEXT NOT NULL,
-                    puuid TEXT NOT NULL
+                    puuid TEXT NOT NULL,
+                    account_index INTEGER DEFAULT 1,
+                    PRIMARY KEY (discord_id, account_index)
                 )
             ''')
+            
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS notified_users (
                     discord_id TEXT PRIMARY KEY,
@@ -44,7 +81,6 @@ class Database:
                     PRIMARY KEY (discord_id, timestamp)
                 )
             ''')
-            # Nouvelle table pour les stats de matchs
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS match_stats (
                     match_id TEXT NOT NULL,
@@ -88,50 +124,197 @@ class Database:
             ''')
             print("✅ Tables de base de données créées")
     
-    async def get_linked_account(self, discord_id: str):
-        """Récupère un compte lié depuis la DB"""
-        if not self.pool:
-            return None
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                'SELECT riot_id, tagline, puuid FROM linked_accounts WHERE discord_id = $1',
-                discord_id
-            )
-            if row:
-                return {
-                    'riot_id': row['riot_id'],
-                    'tagline': row['tagline'],
-                    'puuid': row['puuid']
-                }
-            return None
+    # === FONCTIONS MODIFIÉES POUR MULTI-COMPTES ===
     
-    async def save_linked_account(self, discord_id: str, riot_id: str, tagline: str, puuid: str):
-        """Sauvegarde un compte lié dans la DB"""
+    async def get_linked_account(self, discord_id: str, account_index: int = None):
+        """
+        Récupère un ou plusieurs comptes liés
+        Si account_index est None: retourne TOUS les comptes du joueur (liste)
+        Si account_index est spécifié: retourne ce compte spécifique (dict ou None)
+        """
+        if not self.pool:
+            return None if account_index else []
+        
+        async with self.pool.acquire() as conn:
+            if account_index is not None:
+                # Récupérer un compte spécifique
+                row = await conn.fetchrow(
+                    'SELECT riot_id, tagline, puuid, account_index FROM linked_accounts WHERE discord_id = $1 AND account_index = $2',
+                    discord_id, account_index
+                )
+                if row:
+                    return {
+                        'riot_id': row['riot_id'],
+                        'tagline': row['tagline'],
+                        'puuid': row['puuid'],
+                        'account_index': row['account_index']
+                    }
+                return None
+            else:
+                # Récupérer tous les comptes
+                rows = await conn.fetch(
+                    'SELECT riot_id, tagline, puuid, account_index FROM linked_accounts WHERE discord_id = $1 ORDER BY account_index',
+                    discord_id
+                )
+                return [
+                    {
+                        'riot_id': row['riot_id'],
+                        'tagline': row['tagline'],
+                        'puuid': row['puuid'],
+                        'account_index': row['account_index']
+                    }
+                    for row in rows
+                ]
+    
+    async def save_linked_account(self, discord_id: str, riot_id: str, tagline: str, puuid: str, account_index: int = 1):
+        """
+        Sauvegarde un compte lié dans la DB
+        account_index par défaut = 1 (premier compte)
+        """
         if not self.pool:
             return False
         async with self.pool.acquire() as conn:
             await conn.execute('''
-                INSERT INTO linked_accounts (discord_id, riot_id, tagline, puuid)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT (discord_id) DO UPDATE
+                INSERT INTO linked_accounts (discord_id, riot_id, tagline, puuid, account_index)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (discord_id, account_index) DO UPDATE
                 SET riot_id = $2, tagline = $3, puuid = $4
-            ''', discord_id, riot_id, tagline, puuid)
+            ''', discord_id, riot_id, tagline, puuid, account_index)
         return True
     
+    async def get_next_account_index(self, discord_id: str):
+        """Récupère le prochain index de compte disponible (max 3)"""
+        if not self.pool:
+            return None
+        async with self.pool.acquire() as conn:
+            max_index = await conn.fetchval(
+                'SELECT COALESCE(MAX(account_index), 0) FROM linked_accounts WHERE discord_id = $1',
+                discord_id
+            )
+            next_index = max_index + 1
+            return next_index if next_index <= 3 else None
+    
     async def get_all_linked_accounts(self):
-        """Récupère tous les comptes liés"""
+        """
+        Récupère tous les comptes liés
+        Retourne un dict groupé par discord_id avec liste de comptes
+        """
         if not self.pool:
             return {}
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch('SELECT * FROM linked_accounts')
-            return {
-                row['discord_id']: {
+            rows = await conn.fetch('SELECT * FROM linked_accounts ORDER BY discord_id, account_index')
+            
+            # Grouper par discord_id
+            result = {}
+            for row in rows:
+                discord_id = row['discord_id']
+                if discord_id not in result:
+                    result[discord_id] = []
+                result[discord_id].append({
                     'riot_id': row['riot_id'],
                     'tagline': row['tagline'],
-                    'puuid': row['puuid']
+                    'puuid': row['puuid'],
+                    'account_index': row['account_index']
+                })
+            
+            return result
+    
+    async def get_all_puuids_for_discord_id(self, discord_id: str):
+        """Récupère tous les PUUIDs d'un utilisateur Discord"""
+        if not self.pool:
+            return []
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                'SELECT puuid FROM linked_accounts WHERE discord_id = $1',
+                discord_id
+            )
+            return [row['puuid'] for row in rows]
+    
+    # === FONCTIONS STATS MULTI-COMPTES ===
+    
+    async def get_player_stats_summary_multi(self, puuids: list, queue_filter: str = None):
+        """
+        Calcule un résumé agrégé des stats pour plusieurs PUUIDs
+        Utilisé pour les stats agrégées de tous les comptes d'un joueur
+        """
+        if not self.pool or not puuids:
+            return None
+        
+        queue_map = {
+            'ranked': [420],
+            'flex': [440],
+            'normal': [400, 430],
+            'aram': [450]
+        }
+        
+        async with self.pool.acquire() as conn:
+            # Construire la requête avec les PUUIDs
+            puuid_placeholders = ','.join(f'${i+1}' for i in range(len(puuids)))
+            
+            base_query = f'''
+                SELECT 
+                    COUNT(*) as total_games,
+                    SUM(CASE WHEN win THEN 1 ELSE 0 END) as wins,
+                    SUM(kills) as total_kills,
+                    SUM(deaths) as total_deaths,
+                    SUM(assists) as total_assists
+                FROM match_stats 
+                WHERE puuid IN ({puuid_placeholders})
+            '''
+            
+            cs_vision_query = f'''
+                SELECT 
+                    AVG(CAST(cs AS FLOAT) / (game_duration / 60.0)) as cs_per_min,
+                    AVG(vision_score) as avg_vision_score
+                FROM match_stats 
+                WHERE puuid IN ({puuid_placeholders}) AND queue_id != 450
+            '''
+            
+            # Ajouter le filtre de queue si nécessaire
+            if queue_filter and queue_filter in queue_map:
+                queue_ids = queue_map[queue_filter]
+                queue_placeholders = ','.join(f'${i+len(puuids)+1}' for i in range(len(queue_ids)))
+                base_query += f' AND queue_id IN ({queue_placeholders})'
+                
+                if queue_filter == 'aram':
+                    cs_vision_query = None
+                else:
+                    cs_vision_query += f' AND queue_id IN ({queue_placeholders})'
+                
+                row = await conn.fetchrow(base_query, *puuids, *queue_ids)
+                if cs_vision_query:
+                    cs_vision_row = await conn.fetchrow(cs_vision_query, *puuids, *queue_ids)
+                else:
+                    cs_vision_row = None
+            else:
+                row = await conn.fetchrow(base_query, *puuids)
+                cs_vision_row = await conn.fetchrow(cs_vision_query, *puuids)
+            
+            if row and row['total_games'] > 0:
+                total_deaths = row['total_deaths'] if row['total_deaths'] > 0 else 1
+                
+                result = {
+                    'total_games': row['total_games'],
+                    'wins': row['wins'],
+                    'losses': row['total_games'] - row['wins'],
+                    'winrate': round((row['wins'] / row['total_games']) * 100, 1),
+                    'total_kills': row['total_kills'],
+                    'total_deaths': row['total_deaths'],
+                    'total_assists': row['total_assists'],
+                    'kda': round((row['total_kills'] + row['total_assists']) / total_deaths, 2)
                 }
-                for row in rows
-            }
+                
+                if cs_vision_row and cs_vision_row['cs_per_min']:
+                    result['cs_per_min'] = round(cs_vision_row['cs_per_min'], 1)
+                    result['avg_vision_score'] = round(cs_vision_row['avg_vision_score'], 1)
+                else:
+                    result['cs_per_min'] = None
+                    result['avg_vision_score'] = None
+                
+                return result
+            return None
+    
+    # === RESTE DES FONCTIONS INCHANGÉES ===
     
     async def is_user_notified(self, discord_id: str):
         """Vérifie si un utilisateur a déjà été notifié"""
@@ -177,8 +360,6 @@ class Database:
                 discord_id, tier, rank, lp
             )
     
-    # === NOUVELLES FONCTIONS POUR MATCH_STATS ===
-    
     async def match_exists(self, match_id: str, puuid: str):
         """Vérifie si un match existe déjà pour ce joueur"""
         if not self.pool:
@@ -191,18 +372,14 @@ class Database:
             return row is not None
     
     async def save_match_stats(self, match_id: str, puuid: str, stats: dict):
-        """Sauvegarde les stats d'un match pour un joueur avec logs de debug"""
+        """Sauvegarde les stats d'un match pour un joueur"""
         if not self.pool:
             print("❌ DEBUG: pool est None!")
             return False
         
-        print(f"🔍 DEBUG: Tentative d'insertion - match_id={match_id[:20]}..., champion={stats.get('champion')}")
-        
         try:
             async with self.pool.acquire() as conn:
-                print(f"🔍 DEBUG: Connexion acquise")
-                
-                result = await conn.execute('''
+                await conn.execute('''
                     INSERT INTO match_stats 
                     (match_id, puuid, champion, kills, deaths, assists, cs, 
                      game_duration, vision_score, win, queue_id, game_date)
@@ -222,26 +399,9 @@ class Database:
                     stats['queue_id'],
                     stats['game_date']
                 )
-                
-                print(f"✅ DEBUG: Execute terminé - result={result}")
-                
-                # Vérifier si l'insertion a vraiment eu lieu
-                check = await conn.fetchval(
-                    'SELECT COUNT(*) FROM match_stats WHERE match_id = $1 AND puuid = $2',
-                    match_id, puuid
-                )
-                print(f"✅ DEBUG: Vérification - {check} ligne(s) trouvée(s)")
-                
-                if check == 0:
-                    print(f"⚠️ DEBUG: CONFLIT! La ligne n'a pas été insérée (déjà existante?)")
-                
-            print(f"✅ DEBUG: Connexion relâchée")
             return True
-            
         except Exception as e:
-            print(f"❌ DEBUG: ERREUR dans save_match_stats: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"❌ Erreur save_match_stats: {e}")
             return False
     
     async def get_player_stats(self, puuid: str, queue_filter: str = None):
@@ -249,12 +409,11 @@ class Database:
         if not self.pool:
             return []
         
-        # Map des filtres vers les queue IDs
         queue_map = {
-            'ranked': [420],  # Ranked Solo/Duo
-            'flex': [440],    # Ranked Flex
-            'normal': [400, 430],  # Normal Draft + Blind
-            'aram': [450]     # ARAM
+            'ranked': [420],
+            'flex': [440],
+            'normal': [400, 430],
+            'aram': [450]
         }
         
         async with self.pool.acquire() as conn:
@@ -275,7 +434,6 @@ class Database:
         if not self.pool:
             return None
         
-        # Map des filtres vers les queue IDs
         queue_map = {
             'ranked': [420],
             'flex': [440],
@@ -284,7 +442,6 @@ class Database:
         }
         
         async with self.pool.acquire() as conn:
-            # Requête de base
             base_query = '''
                 SELECT 
                     COUNT(*) as total_games,
@@ -296,7 +453,6 @@ class Database:
                 WHERE puuid = $1
             '''
             
-            # Requête pour CS et Vision (exclure ARAM)
             cs_vision_query = '''
                 SELECT 
                     AVG(CAST(cs AS FLOAT) / (game_duration / 60.0)) as cs_per_min,
@@ -305,15 +461,12 @@ class Database:
                 WHERE puuid = $1 AND queue_id != 450
             '''
             
-            # Ajouter le filtre si nécessaire
             if queue_filter and queue_filter in queue_map:
                 queue_ids = queue_map[queue_filter]
                 placeholders = ','.join(f'${i+2}' for i in range(len(queue_ids)))
                 base_query += f' AND queue_id IN ({placeholders})'
                 
-                # Pour CS/Vision, on ajoute aussi le filtre mais on garde l'exclusion ARAM
                 if queue_filter == 'aram':
-                    # Si on filtre sur ARAM, on ne calcule pas CS/Vision
                     cs_vision_query = None
                 else:
                     cs_vision_query += f' AND queue_id IN ({placeholders})'
@@ -341,7 +494,6 @@ class Database:
                     'kda': round((row['total_kills'] + row['total_assists']) / total_deaths, 2)
                 }
                 
-                # Ajouter CS et Vision si disponibles
                 if cs_vision_row and cs_vision_row['cs_per_min']:
                     result['cs_per_min'] = round(cs_vision_row['cs_per_min'], 1)
                     result['avg_vision_score'] = round(cs_vision_row['avg_vision_score'], 1)
@@ -363,8 +515,6 @@ class Database:
             )
             return row['count'] if row else 0
 
-    # === FONCTIONS POUR MILESTONES ===
-    
     async def check_and_save_milestone(
         self,
         puuid: str,
@@ -390,7 +540,6 @@ class Database:
         if not thresholds:
             return None
     
-        # 🥇 plus haut palier atteignable
         reached_threshold = max(
             (t for t in thresholds if current_value >= t),
             default=None
@@ -400,7 +549,6 @@ class Database:
             return None
     
         async with self.pool.acquire() as conn:
-            # 🔎 dernier milestone enregistré
             last_saved = await conn.fetchval(
                 '''
                 SELECT MAX(milestone_value)
@@ -411,11 +559,9 @@ class Database:
                 puuid, milestone_type, extra_data
             )
     
-            # 🚫 déjà au même niveau ou plus haut → rien à faire
             if last_saved is not None and reached_threshold <= last_saved:
                 return None
     
-            # 💾 sauvegarde uniquement le meilleur
             await conn.execute(
                 '''
                 INSERT INTO milestones (puuid, milestone_type, milestone_value, extra_data)
@@ -428,15 +574,11 @@ class Database:
             return reached_threshold
     
     async def get_current_streak(self, puuid: str):
-        """
-        Calcule la série actuelle (win streak ou lose streak)
-        Retourne ('win', count) ou ('lose', count) ou (None, 0)
-        """
+        """Calcule la série actuelle (win streak ou lose streak)"""
         if not self.pool:
             return None, 0
         
         async with self.pool.acquire() as conn:
-            # Récupérer les 20 derniers matchs triés par date
             rows = await conn.fetch('''
                 SELECT win FROM match_stats 
                 WHERE puuid = $1 
@@ -447,7 +589,6 @@ class Database:
             if not rows or len(rows) == 0:
                 return None, 0
             
-            # Calculer la série actuelle
             streak_type = 'win' if rows[0]['win'] else 'lose'
             streak_count = 0
             
@@ -460,10 +601,7 @@ class Database:
             return streak_type, streak_count
     
     async def get_champion_stats(self, puuid: str):
-        """
-        Récupère les stats par champion
-        Retourne dict {champion: game_count}
-        """
+        """Récupère les stats par champion"""
         if not self.pool:
             return {}
         
@@ -477,8 +615,3 @@ class Database:
             ''', puuid)
             
             return {row['champion']: row['game_count'] for row in rows}
-
-
-
-
-
