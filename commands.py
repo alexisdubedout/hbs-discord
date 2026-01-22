@@ -28,6 +28,18 @@ def register_commands(bot):
     async def link(interaction: discord.Interaction, riot_id: str, tagline: str):
         await interaction.response.defer()
         
+        user_id = str(interaction.user.id)
+        
+        # Vérifier si l'utilisateur a déjà des comptes liés
+        existing_accounts = await bot.db.get_linked_account(user_id)
+        
+        if existing_accounts:
+            await interaction.followup.send(
+                f"❌ Tu as déjà un compte lié.\n"
+                f"Utilise `/add_account` pour ajouter un compte supplémentaire (max 3 comptes)."
+            )
+            return
+        
         account = await get_summoner_by_riot_id(riot_id, tagline)
         if not account:
             await interaction.followup.send("❌ Compte Riot introuvable. Vérifie ton Riot ID et tagline.")
@@ -38,11 +50,10 @@ def register_commands(bot):
             await interaction.followup.send("❌ Erreur lors de la récupération des données.")
             return
         
-        user_id = str(interaction.user.id)
-        success = await bot.db.save_linked_account(user_id, riot_id, tagline, account['puuid'])
+        # Sauvegarder comme compte #1
+        success = await bot.db.save_linked_account(user_id, riot_id, tagline, account['puuid'], account_index=1)
         
         if success:
-            # Envoyer le message de confirmation
             await interaction.followup.send(
                 f"✅ Compte lié avec succès: **{riot_id}#{tagline}**\n"
                 f"⏳ Récupération de l'historique en cours... Cela peut prendre quelques minutes."
@@ -75,7 +86,98 @@ def register_commands(bot):
                 except:
                     pass
             
-            # Lancer la tâche en background
+            asyncio.create_task(sync_with_updates())
+        else:
+            await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
+    
+    @bot.tree.command(name="add_account", description="Ajoute un compte Riot supplémentaire (max 3 comptes)")
+    @app_commands.describe(
+        riot_id="Ton Riot ID (ex: Faker)",
+        tagline="Ton tagline (ex: KR1)"
+    )
+    async def add_account(interaction: discord.Interaction, riot_id: str, tagline: str):
+        await interaction.response.defer()
+        
+        user_id = str(interaction.user.id)
+        
+        # Vérifier combien de comptes l'utilisateur a déjà
+        existing_accounts = await bot.db.get_linked_account(user_id)
+        
+        if not existing_accounts:
+            await interaction.followup.send(
+                f"❌ Tu n'as pas encore de compte lié.\n"
+                f"Utilise `/link` pour lier ton premier compte."
+            )
+            return
+        
+        if len(existing_accounts) >= 3:
+            await interaction.followup.send(
+                f"❌ Tu as déjà 3 comptes liés (maximum).\n"
+                f"Tes comptes actuels :\n" +
+                "\n".join([f"**{i+1}.** {acc['riot_id']}#{acc['tagline']}" for i, acc in enumerate(existing_accounts)])
+            )
+            return
+        
+        # Vérifier si ce compte n'est pas déjà lié
+        for acc in existing_accounts:
+            if acc['riot_id'].lower() == riot_id.lower() and acc['tagline'].lower() == tagline.lower():
+                await interaction.followup.send(f"❌ Ce compte est déjà lié à ton profil Discord.")
+                return
+        
+        # Récupérer le compte Riot
+        account = await get_summoner_by_riot_id(riot_id, tagline)
+        if not account:
+            await interaction.followup.send("❌ Compte Riot introuvable. Vérifie ton Riot ID et tagline.")
+            return
+        
+        summoner = await get_summoner_data(account['puuid'])
+        if not summoner:
+            await interaction.followup.send("❌ Erreur lors de la récupération des données.")
+            return
+        
+        # Récupérer le prochain index disponible
+        next_index = await bot.db.get_next_account_index(user_id)
+        
+        if not next_index:
+            await interaction.followup.send("❌ Erreur : impossible d'ajouter un nouveau compte.")
+            return
+        
+        # Sauvegarder le compte
+        success = await bot.db.save_linked_account(user_id, riot_id, tagline, account['puuid'], account_index=next_index)
+        
+        if success:
+            await interaction.followup.send(
+                f"✅ Compte #{next_index} ajouté: **{riot_id}#{tagline}**\n"
+                f"⏳ Récupération de l'historique en cours... Cela peut prendre quelques minutes."
+            )
+            
+            # Lancer la sync complète en arrière-plan
+            from bot import sync_player_full_history
+            import asyncio
+            
+            async def sync_with_updates():
+                async def progress(msg):
+                    try:
+                        await interaction.edit_original_response(
+                            content=f"✅ Compte #{next_index} ajouté: **{riot_id}#{tagline}**\n{msg}"
+                        )
+                    except:
+                        pass
+                
+                new_matches = await sync_player_full_history(
+                    account['puuid'], 
+                    f"{riot_id}#{tagline}",
+                    progress
+                )
+                
+                try:
+                    await interaction.edit_original_response(
+                        content=f"✅ Compte #{next_index} ajouté: **{riot_id}#{tagline}**\n"
+                                f"🎉 **{new_matches} matchs** de la saison en cours récupérés !"
+                    )
+                except:
+                    pass
+            
             asyncio.create_task(sync_with_updates())
         else:
             await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
@@ -104,7 +206,7 @@ def register_commands(bot):
             return
         
         user_id = str(user.id)
-        success = await bot.db.save_linked_account(user_id, riot_id, tagline, account['puuid'])
+        success = await bot.db.save_linked_account(user_id, riot_id, tagline, account['puuid'], account_index=1)
         
         if success:
             await interaction.followup.send(f"✅ Compte lié pour {user.mention}: **{riot_id}#{tagline}**")
@@ -117,7 +219,6 @@ def register_commands(bot):
             await interaction.response.send_message("❌ Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
             return
         
-        # VÉRIFICATION CRITIQUE DE LA DB
         if not bot.db or not bot.db.pool:
             await interaction.response.send_message(
                 "❌ La base de données n'est pas initialisée. Attends quelques secondes que le bot soit complètement démarré, puis réessaye.",
@@ -133,8 +234,11 @@ def register_commands(bot):
             await interaction.followup.send("❌ Aucun compte lié.")
             return
         
+        # Compter tous les comptes (plusieurs par joueur possible)
+        total_accounts = sum(len(accounts) for accounts in linked_accounts.values())
+        
         await interaction.followup.send(
-            f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s)...\n"
+            f"🔄 Début de la synchronisation complète pour {len(linked_accounts)} joueur(s) ({total_accounts} comptes)...\n"
             f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
         )
         
@@ -144,41 +248,39 @@ def register_commands(bot):
         total_new_matches = 0
         completed = 0
         
-        for discord_id, account_info in linked_accounts.items():
-            try:
-                puuid = account_info['puuid']
-                riot_id = account_info['riot_id']
-                tagline = account_info['tagline']
-                
-                # Vérifier combien de matchs sont déjà en DB
-                existing_count = await bot.db.get_match_count(puuid)
-                
-                await interaction.edit_original_response(
-                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                            f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
-                )
-                
-                # Sync complète
-                new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
-                total_new_matches += new_matches
-                completed += 1
-                
-                await interaction.edit_original_response(
-                    content=f"🔄 Synchronisation: {completed}/{len(linked_accounts)}\n"
-                            f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
-                            f"📊 Total: {total_new_matches} nouveaux matchs"
-                )
-                
-                # Petit délai entre chaque joueur
-                await asyncio.sleep(2)
-                
-            except Exception as e:
-                print(f"Erreur sync pour {discord_id}: {e}")
-                continue
+        for discord_id, accounts_list in linked_accounts.items():
+            for account_info in accounts_list:
+                try:
+                    puuid = account_info['puuid']
+                    riot_id = account_info['riot_id']
+                    tagline = account_info['tagline']
+                    
+                    existing_count = await bot.db.get_match_count(puuid)
+                    
+                    await interaction.edit_original_response(
+                        content=f"🔄 Synchronisation: {completed}/{total_accounts}\n"
+                                f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
+                    )
+                    
+                    new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
+                    total_new_matches += new_matches
+                    completed += 1
+                    
+                    await interaction.edit_original_response(
+                        content=f"🔄 Synchronisation: {completed}/{total_accounts}\n"
+                                f"✅ **{riot_id}#{tagline}**: +{new_matches} nouveaux matchs\n"
+                                f"📊 Total: {total_new_matches} nouveaux matchs"
+                    )
+                    
+                    await asyncio.sleep(2)
+                    
+                except Exception as e:
+                    print(f"Erreur sync pour {account_info.get('riot_id', 'unknown')}: {e}")
+                    continue
         
         await interaction.edit_original_response(
             content=f"✅ **Synchronisation terminée !**\n\n"
-                    f"👥 Joueurs traités: {completed}/{len(linked_accounts)}\n"
+                    f"👥 Comptes traités: {completed}/{total_accounts}\n"
                     f"🎮 Nouveaux matchs: **{total_new_matches}**\n"
                     f"🎉 Toutes les stats sont maintenant à jour !"
         )
@@ -209,87 +311,92 @@ def register_commands(bot):
         
         players_data = []
         
-        for discord_id, account_info in linked_accounts.items():
-            try:
-                member = interaction.guild.get_member(int(discord_id))
-                if not member:
-                    continue
-                
-                # Récupérer les stats ranked (toujours utiles pour l'affichage)
-                ranked_stats = await get_ranked_stats(account_info['puuid'])
-                
-                # Récupérer les stats de matchs depuis la DB
-                match_stats = await bot.db.get_player_stats_summary(account_info['puuid'])
-                
-                player_info = {
-                    'name': f"{account_info['riot_id']}#{account_info['tagline']}",
-                    'discord_name': member.display_name,
-                    'puuid': account_info['puuid']
-                }
-                
-                # Stats ranked
-                if ranked_stats:
-                    tier = ranked_stats['tier']
-                    rank = ranked_stats['rank']
-                    lp = ranked_stats['leaguePoints']
-                    wins = ranked_stats['wins']
-                    losses = ranked_stats['losses']
-                    total = wins + losses
-                    winrate_ranked = round((wins / total) * 100, 1) if total > 0 else 0
+        # Parcourir tous les comptes (chaque compte apparaît séparément)
+        for discord_id, accounts_list in linked_accounts.items():
+            for account_info in accounts_list:
+                try:
+                    member = interaction.guild.get_member(int(discord_id))
+                    if not member:
+                        continue
                     
-                    player_info.update({
-                        'tier': tier,
-                        'rank': rank,
-                        'lp': lp,
-                        'ranked_wins': wins,
-                        'ranked_losses': losses,
-                        'ranked_winrate': winrate_ranked,
-                        'rank_value': get_rank_value(tier, rank, lp)
-                    })
-                else:
-                    player_info.update({
-                        'tier': 'UNRANKED',
-                        'rank': '',
-                        'lp': 0,
-                        'ranked_wins': 0,
-                        'ranked_losses': 0,
-                        'ranked_winrate': 0,
-                        'rank_value': -1
-                    })
-                
-                # Stats de matchs (pour les autres critères)
-                if match_stats and match_stats['total_games'] > 0:
-                    player_info.update({
-                        'total_games': match_stats['total_games'],
-                        'wins': match_stats['wins'],
-                        'losses': match_stats['losses'],
-                        'winrate': match_stats['winrate'],
-                        'total_kills': match_stats['total_kills'],
-                        'total_deaths': match_stats['total_deaths'],
-                        'total_assists': match_stats['total_assists'],
-                        'kda': match_stats['kda'],
-                        'cs_per_min': match_stats.get('cs_per_min', 0),
-                        'avg_vision_score': match_stats.get('avg_vision_score', 0)
-                    })
-                else:
-                    player_info.update({
-                        'total_games': 0,
-                        'wins': 0,
-                        'losses': 0,
-                        'winrate': 0,
-                        'total_kills': 0,
-                        'total_deaths': 0,
-                        'total_assists': 0,
-                        'kda': 0.0,
-                        'cs_per_min': 0,
-                        'avg_vision_score': 0
-                    })
-                
-                players_data.append(player_info)
-                
-            except Exception as e:
-                print(f"Erreur pour {discord_id}: {e}")
-                continue
+                    puuid = account_info['puuid']
+                    
+                    # Récupérer les stats ranked
+                    ranked_stats = await get_ranked_stats(puuid)
+                    
+                    # Récupérer les stats de matchs depuis la DB
+                    match_stats = await bot.db.get_player_stats_summary(puuid)
+                    
+                    player_info = {
+                        'name': f"{account_info['riot_id']}#{account_info['tagline']}",
+                        'discord_name': member.display_name,
+                        'puuid': puuid,
+                        'account_index': account_info.get('account_index', 1)
+                    }
+                    
+                    # Stats ranked
+                    if ranked_stats:
+                        tier = ranked_stats['tier']
+                        rank = ranked_stats['rank']
+                        lp = ranked_stats['leaguePoints']
+                        wins = ranked_stats['wins']
+                        losses = ranked_stats['losses']
+                        total = wins + losses
+                        winrate_ranked = round((wins / total) * 100, 1) if total > 0 else 0
+                        
+                        player_info.update({
+                            'tier': tier,
+                            'rank': rank,
+                            'lp': lp,
+                            'ranked_wins': wins,
+                            'ranked_losses': losses,
+                            'ranked_winrate': winrate_ranked,
+                            'rank_value': get_rank_value(tier, rank, lp)
+                        })
+                    else:
+                        player_info.update({
+                            'tier': 'UNRANKED',
+                            'rank': '',
+                            'lp': 0,
+                            'ranked_wins': 0,
+                            'ranked_losses': 0,
+                            'ranked_winrate': 0,
+                            'rank_value': -1
+                        })
+                    
+                    # Stats de matchs
+                    if match_stats and match_stats['total_games'] > 0:
+                        player_info.update({
+                            'total_games': match_stats['total_games'],
+                            'wins': match_stats['wins'],
+                            'losses': match_stats['losses'],
+                            'winrate': match_stats['winrate'],
+                            'total_kills': match_stats['total_kills'],
+                            'total_deaths': match_stats['total_deaths'],
+                            'total_assists': match_stats['total_assists'],
+                            'kda': match_stats['kda'],
+                            'cs_per_min': match_stats.get('cs_per_min', 0),
+                            'avg_vision_score': match_stats.get('avg_vision_score', 0)
+                        })
+                    else:
+                        player_info.update({
+                            'total_games': 0,
+                            'wins': 0,
+                            'losses': 0,
+                            'winrate': 0,
+                            'total_kills': 0,
+                            'total_deaths': 0,
+                            'total_assists': 0,
+                            'kda': 0.0,
+                            'cs_per_min': 0,
+                            'avg_vision_score': 0
+                        })
+                    
+                    players_data.append(player_info)
+                    
+                except Exception as e:
+                    print(f"Erreur pour {account_info.get('riot_id', 'unknown')}: {e}")
+                    continue
         
         if not players_data:
             await interaction.followup.send("❌ Aucune donnée disponible.")
@@ -308,7 +415,7 @@ def register_commands(bot):
             'vision': '👁️ Vision Score Moyen'
         }
         
-        # Filtrer les joueurs qui ont des données pour le critère (sauf rank)
+        # Filtrer et trier
         if critere != 'rank':
             players_data = [p for p in players_data if p['total_games'] > 0]
             
@@ -316,7 +423,6 @@ def register_commands(bot):
                 await interaction.followup.send(f"❌ Aucune donnée de match disponible pour ce critère.")
                 return
         
-        # Trier selon le critère
         if critere == 'rank':
             players_data.sort(key=lambda x: x['rank_value'], reverse=True)
         elif critere == 'kills':
@@ -328,7 +434,6 @@ def register_commands(bot):
         elif critere == 'kda':
             players_data.sort(key=lambda x: x['kda'], reverse=True)
         elif critere == 'winrate':
-            # Minimum 10 games pour être dans le classement winrate
             players_data = [p for p in players_data if p['total_games'] >= 10]
             if not players_data:
                 await interaction.followup.send(f"❌ Aucun joueur n'a assez de games (minimum 10) pour ce classement.")
@@ -337,14 +442,12 @@ def register_commands(bot):
         elif critere == 'games':
             players_data.sort(key=lambda x: x['total_games'], reverse=True)
         elif critere == 'cs':
-            # Filtrer les joueurs qui ont des stats de CS (pas ARAM only)
             players_data = [p for p in players_data if p['cs_per_min'] > 0]
             if not players_data:
                 await interaction.followup.send(f"❌ Aucune donnée de CS disponible (critère non applicable en ARAM).")
                 return
             players_data.sort(key=lambda x: x['cs_per_min'], reverse=True)
         elif critere == 'vision':
-            # Filtrer les joueurs qui ont des stats de vision (pas ARAM only)
             players_data = [p for p in players_data if p['avg_vision_score'] > 0]
             if not players_data:
                 await interaction.followup.send(f"❌ Aucune donnée de vision disponible (critère non applicable en ARAM).")
@@ -358,11 +461,9 @@ def register_commands(bot):
             description=f"**Critère:** {critere_names[critere]}"
         )
         
-        # Limiter à 15 joueurs pour éviter un embed trop long
         top_players = players_data[:15]
         
         for i, player in enumerate(top_players, 1):
-            # Médailles pour le top 3
             medal = ""
             if i == 1:
                 medal = "🥇 "
@@ -423,7 +524,6 @@ def register_commands(bot):
                 inline=False
             )
         
-        # Footer avec info supplémentaire
         footer_text = "Mis à jour le"
         if critere == 'winrate':
             footer_text = "Minimum 10 games • " + footer_text
@@ -434,7 +534,7 @@ def register_commands(bot):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
-        
+    
     @bot.tree.command(name="random_teams", description="Génère 2 équipes aléatoires depuis le vocal")
     async def random_teams(interaction: discord.Interaction):
         if not interaction.user.voice:
@@ -509,35 +609,42 @@ def register_commands(bot):
         
         await interaction.followup.send(embed=embed)
     
+    # === /STATS AVEC MENU DÉROULANT ===
     @bot.tree.command(name="stats", description="Affiche les statistiques détaillées d'un joueur")
     @app_commands.describe(
         joueur="Le joueur dont tu veux voir les stats (laisse vide pour toi-même)",
-        mode="Filtre par mode de jeu"
+        mode="Filtre par mode de jeu",
+        compte="Quel compte afficher (laisse vide pour stats agrégées)"
     )
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="Tous les modes", value="all"),
-        app_commands.Choice(name="Ranked Solo/Duo", value="ranked"),
-        app_commands.Choice(name="Ranked Flex", value="flex"),
-        app_commands.Choice(name="Normal", value="normal"),
-        app_commands.Choice(name="ARAM", value="aram")
-    ])
-    async def stats(interaction: discord.Interaction, joueur: discord.Member = None, mode: str = "all"):
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="Tous les modes", value="all"),
+            app_commands.Choice(name="Ranked Solo/Duo", value="ranked"),
+            app_commands.Choice(name="Ranked Flex", value="flex"),
+            app_commands.Choice(name="Normal", value="normal"),
+            app_commands.Choice(name="ARAM", value="aram")
+        ],
+        compte=[
+            app_commands.Choice(name="📊 Tous les comptes (agrégé)", value="all"),
+            app_commands.Choice(name="1️⃣ Compte #1", value="1"),
+            app_commands.Choice(name="2️⃣ Compte #2", value="2"),
+            app_commands.Choice(name="3️⃣ Compte #3", value="3")
+        ]
+    )
+    async def stats(interaction: discord.Interaction, joueur: discord.Member = None, mode: str = "all", compte: str = "all"):
         await interaction.response.defer()
-        
-        # Si aucun joueur spécifié, utiliser l'auteur de la commande
         target_user = joueur if joueur else interaction.user
         user_id = str(target_user.id)
         
-        account = await bot.db.get_linked_account(user_id)
+        accounts = await bot.db.get_linked_account(user_id)
         
-        if not account:
+        if not accounts:
             if target_user == interaction.user:
                 await interaction.followup.send("❌ Tu n'as pas lié ton compte. Utilise `/link` pour le faire !")
             else:
                 await interaction.followup.send(f"❌ {target_user.mention} n'a pas lié son compte.")
             return
         
-        # Map des noms de modes pour l'affichage
         mode_names = {
             'all': 'Tous les modes',
             'ranked': 'Ranked Solo/Duo',
@@ -546,32 +653,78 @@ def register_commands(bot):
             'aram': 'ARAM'
         }
         
-        # Récupérer les stats ranked
-        ranked_stats = await get_ranked_stats(account['puuid'])
+        # Déterminer quels comptes utiliser
+        if compte == "all":
+            # Stats agrégées de tous les comptes
+            puuids = [acc['puuid'] for acc in accounts]
+            queue_filter = None if mode == 'all' else mode
+            match_stats = await bot.db.get_player_stats_summary_multi(puuids, queue_filter)
+            
+            # Récupérer le meilleur rang parmi tous les comptes
+            best_ranked_stats = None
+            best_rank_value = -1
+            
+            for acc in accounts:
+                ranked_stats = await get_ranked_stats(acc['puuid'])
+                if ranked_stats:
+                    from config import get_rank_value
+                    rank_val = get_rank_value(ranked_stats['tier'], ranked_stats['rank'], ranked_stats['leaguePoints'])
+                    if rank_val > best_rank_value:
+                        best_rank_value = rank_val
+                        best_ranked_stats = ranked_stats
+            
+            # Récupérer tous les matchs pour les stats détaillées
+            all_matches = []
+            for acc in accounts:
+                matches = await bot.db.get_player_stats(acc['puuid'], queue_filter)
+                all_matches.extend(matches)
+            
+            # Trier par date
+            all_matches.sort(key=lambda x: x['game_date'], reverse=True)
+            
+            display_name = f"Tous les comptes ({len(accounts)} compte{'s' if len(accounts) > 1 else ''})"
+            
+        else:
+            # Stats d'un compte spécifique
+            account_index = int(compte)
+            
+            # Vérifier si ce compte existe
+            selected_account = None
+            for acc in accounts:
+                if acc['account_index'] == account_index:
+                    selected_account = acc
+                    break
+            
+            if not selected_account:
+                await interaction.followup.send(f"❌ {target_user.display_name} n'a pas de compte #{account_index}.")
+                return
+            
+            puuid = selected_account['puuid']
+            queue_filter = None if mode == 'all' else mode
+            
+            best_ranked_stats = await get_ranked_stats(puuid)
+            match_stats = await bot.db.get_player_stats_summary(puuid, queue_filter)
+            all_matches = await bot.db.get_player_stats(puuid, queue_filter)
+            
+            display_name = f"{selected_account['riot_id']}#{selected_account['tagline']}"
         
-        # Récupérer les stats de matchs avec filtre
-        queue_filter = None if mode == 'all' else mode
-        match_stats = await bot.db.get_player_stats_summary(account['puuid'], queue_filter)
-        all_matches = await bot.db.get_player_stats(account['puuid'], queue_filter)
-        
-        # Créer l'embed
+        # === CRÉATION DE L'EMBED ===
         mode_display = mode_names.get(mode, 'Tous les modes')
         embed = discord.Embed(
             title=f"📊 Statistiques de {target_user.display_name}",
             color=discord.Color.blue(),
-            description=f"**{account['riot_id']}#{account['tagline']}**\n*{mode_display}*"
+            description=f"**{display_name}**\n*{mode_display}*"
         )
         
-        # Ajouter la photo de profil Discord
         embed.set_thumbnail(url=target_user.display_avatar.url)
         
-        # === RANG RANKED (toujours affiché) ===
-        if ranked_stats:
-            tier = ranked_stats['tier']
-            rank = ranked_stats['rank']
-            lp = ranked_stats['leaguePoints']
-            wins = ranked_stats['wins']
-            losses = ranked_stats['losses']
+        # === RANG RANKED ===
+        if best_ranked_stats:
+            tier = best_ranked_stats['tier']
+            rank = best_ranked_stats['rank']
+            lp = best_ranked_stats['leaguePoints']
+            wins = best_ranked_stats['wins']
+            losses = best_ranked_stats['losses']
             total = wins + losses
             wr = round((wins / total) * 100, 1) if total > 0 else 0
             
@@ -584,11 +737,8 @@ def register_commands(bot):
             
             rank_text += f"\n`{wins}W {losses}L - {wr}% WR`"
             
-            embed.add_field(
-                name="🏆 Rang Ranked Solo/Duo",
-                value=rank_text,
-                inline=False
-            )
+            rank_title = "🏆 Meilleur Rang" if compte == "all" else "🏆 Rang Ranked Solo/Duo"
+            embed.add_field(name=rank_title, value=rank_text, inline=False)
         else:
             embed.add_field(
                 name="🏆 Rang Ranked Solo/Duo",
@@ -596,7 +746,7 @@ def register_commands(bot):
                 inline=False
             )
         
-        # === STATS GÉNÉRALES (FILTRÉES) ===
+        # === STATS GÉNÉRALES ===
         if match_stats and match_stats['total_games'] > 0:
             general_text = f"🎮 **Games jouées:** {match_stats['total_games']}\n"
             general_text += f"✅ **Victoires:** {match_stats['wins']} ({match_stats['winrate']}%)\n"
@@ -620,7 +770,7 @@ def register_commands(bot):
                 inline=True
             )
             
-            # === FARMING & VISION (sauf ARAM) ===
+            # === FARMING & VISION ===
             if match_stats['cs_per_min'] is not None:
                 farm_text = f"🌾 **CS/min:** {match_stats['cs_per_min']}\n"
                 farm_text += f"👁️ **Vision/game:** {match_stats['avg_vision_score']}\n"
@@ -633,7 +783,6 @@ def register_commands(bot):
             
             # === CHAMPIONS LES PLUS JOUÉS ===
             if all_matches:
-                # Compter les champions
                 champion_counts = {}
                 champion_stats = {}
                 
@@ -648,7 +797,6 @@ def register_commands(bot):
                     if match['win']:
                         champion_stats[champ]['wins'] += 1
                 
-                # Top 5 champions
                 top_champions = sorted(champion_counts.items(), key=lambda x: x[1], reverse=True)[:5]
                 
                 if top_champions:
@@ -663,14 +811,12 @@ def register_commands(bot):
                         inline=False
                     )
             
-            # === SÉRIES ===
+            # === FORME RÉCENTE ===
             if len(all_matches) >= 5:
-                # Calculer la série actuelle (5 dernières games)
                 recent_5 = all_matches[:5]
                 recent_wins = sum(1 for m in recent_5 if m['win'])
                 recent_losses = 5 - recent_wins
                 
-                # Calculer la série (streak)
                 streak = 0
                 streak_type = None
                 for match in all_matches:
@@ -701,38 +847,120 @@ def register_commands(bot):
                 inline=False
             )
         
-        embed.set_footer(text="Synchronisation toutes les 30 min • Utilise les filtres pour voir par mode")
+        footer_text = "Synchronisation toutes les 30 min"
+        if compte == "all":
+            footer_text = f"Stats agrégées de {len(accounts)} compte{'s' if len(accounts) > 1 else ''} • " + footer_text
+        
+        embed.set_footer(text=footer_text)
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
     
+    # === /COMPARE AVEC MENUS ===
     @bot.tree.command(name="compare", description="Compare deux joueurs du serveur en détail")
     @app_commands.describe(
         joueur1="Premier joueur à comparer",
-        joueur2="Deuxième joueur à comparer"
+        joueur2="Deuxième joueur à comparer",
+        compte_joueur1="Quel compte du joueur 1 (laisse vide pour agrégé)",
+        compte_joueur2="Quel compte du joueur 2 (laisse vide pour agrégé)"
     )
-    async def compare(interaction: discord.Interaction, joueur1: discord.Member, joueur2: discord.Member):
+    @app_commands.choices(
+        compte_joueur1=[
+            app_commands.Choice(name="📊 Tous les comptes (agrégé)", value="all"),
+            app_commands.Choice(name="1️⃣ Compte #1", value="1"),
+            app_commands.Choice(name="2️⃣ Compte #2", value="2"),
+            app_commands.Choice(name="3️⃣ Compte #3", value="3")
+        ],
+        compte_joueur2=[
+            app_commands.Choice(name="📊 Tous les comptes (agrégé)", value="all"),
+            app_commands.Choice(name="1️⃣ Compte #1", value="1"),
+            app_commands.Choice(name="2️⃣ Compte #2", value="2"),
+            app_commands.Choice(name="3️⃣ Compte #3", value="3")
+        ]
+    )
+    async def compare(interaction: discord.Interaction, joueur1: discord.Member, joueur2: discord.Member, compte_joueur1: str = "all", compte_joueur2: str = "all"):
         await interaction.response.defer()
         
-        account1 = await bot.db.get_linked_account(str(joueur1.id))
-        account2 = await bot.db.get_linked_account(str(joueur2.id))
+        accounts1 = await bot.db.get_linked_account(str(joueur1.id))
+        accounts2 = await bot.db.get_linked_account(str(joueur2.id))
         
-        if not account1:
+        if not accounts1:
             await interaction.followup.send(f"❌ {joueur1.mention} n'a pas lié son compte.")
             return
         
-        if not account2:
+        if not accounts2:
             await interaction.followup.send(f"❌ {joueur2.mention} n'a pas lié son compte.")
             return
         
-        # Récupérer les stats ranked
-        ranked1 = await get_ranked_stats(account1['puuid'])
-        ranked2 = await get_ranked_stats(account2['puuid'])
+        # === JOUEUR 1 ===
+        if compte_joueur1 == "all":
+            puuids1 = [acc['puuid'] for acc in accounts1]
+            stats1 = await bot.db.get_player_stats_summary_multi(puuids1)
+            
+            # Meilleur rang
+            ranked1 = None
+            best_rank_value1 = -1
+            for acc in accounts1:
+                r = await get_ranked_stats(acc['puuid'])
+                if r:
+                    from config import get_rank_value
+                    rv = get_rank_value(r['tier'], r['rank'], r['leaguePoints'])
+                    if rv > best_rank_value1:
+                        best_rank_value1 = rv
+                        ranked1 = r
+            
+            display_name1 = f"{len(accounts1)} compte{'s' if len(accounts1) > 1 else ''}"
+        else:
+            account_index1 = int(compte_joueur1)
+            selected1 = None
+            for acc in accounts1:
+                if acc['account_index'] == account_index1:
+                    selected1 = acc
+                    break
+            
+            if not selected1:
+                await interaction.followup.send(f"❌ {joueur1.display_name} n'a pas de compte #{account_index1}.")
+                return
+            
+            stats1 = await bot.db.get_player_stats_summary(selected1['puuid'])
+            ranked1 = await get_ranked_stats(selected1['puuid'])
+            display_name1 = f"{selected1['riot_id']}#{selected1['tagline']}"
         
-        # Récupérer les stats de matchs depuis la DB
-        stats1 = await bot.db.get_player_stats_summary(account1['puuid'])
-        stats2 = await bot.db.get_player_stats_summary(account2['puuid'])
+        # === JOUEUR 2 ===
+        if compte_joueur2 == "all":
+            puuids2 = [acc['puuid'] for acc in accounts2]
+            stats2 = await bot.db.get_player_stats_summary_multi(puuids2)
+            
+            # Meilleur rang
+            ranked2 = None
+            best_rank_value2 = -1
+            for acc in accounts2:
+                r = await get_ranked_stats(acc['puuid'])
+                if r:
+                    from config import get_rank_value
+                    rv = get_rank_value(r['tier'], r['rank'], r['leaguePoints'])
+                    if rv > best_rank_value2:
+                        best_rank_value2 = rv
+                        ranked2 = r
+            
+            display_name2 = f"{len(accounts2)} compte{'s' if len(accounts2) > 1 else ''}"
+        else:
+            account_index2 = int(compte_joueur2)
+            selected2 = None
+            for acc in accounts2:
+                if acc['account_index'] == account_index2:
+                    selected2 = acc
+                    break
+            
+            if not selected2:
+                await interaction.followup.send(f"❌ {joueur2.display_name} n'a pas de compte #{account_index2}.")
+                return
+            
+            stats2 = await bot.db.get_player_stats_summary(selected2['puuid'])
+            ranked2 = await get_ranked_stats(selected2['puuid'])
+            display_name2 = f"{selected2['riot_id']}#{selected2['tagline']}"
         
+        # === CRÉATION DE L'EMBED ===
         embed = discord.Embed(
             title="⚔️ Comparaison Détaillée",
             color=discord.Color.purple(),
@@ -740,9 +968,8 @@ def register_commands(bot):
         )
         
         # === JOUEUR 1 ===
-        player1_text = f"**{account1['riot_id']}#{account1['tagline']}**\n\n"
+        player1_text = f"**{display_name1}**\n\n"
         
-        # Rang
         if ranked1:
             tier1 = ranked1['tier']
             rank1 = ranked1['rank']
@@ -758,13 +985,11 @@ def register_commands(bot):
         
         player1_text += "\n📊 **Statistiques:**\n"
         
-        # Stats de games
         if stats1:
             player1_text += f"🎮 Games: **{stats1['total_games']}** ({stats1['wins']}W/{stats1['losses']}L)\n"
             player1_text += f"📈 WR: **{stats1['winrate']}%**\n"
             player1_text += f"⚔️ KDA: **{stats1['kda']}**\n"
             
-            # CS et Vision seulement si disponibles (pas ARAM)
             if stats1.get('cs_per_min'):
                 player1_text += f"🌾 CS/min: **{stats1['cs_per_min']}**\n"
             if stats1.get('avg_vision_score'):
@@ -779,9 +1004,8 @@ def register_commands(bot):
         )
         
         # === JOUEUR 2 ===
-        player2_text = f"**{account2['riot_id']}#{account2['tagline']}**\n\n"
+        player2_text = f"**{display_name2}**\n\n"
         
-        # Rang
         if ranked2:
             tier2 = ranked2['tier']
             rank2 = ranked2['rank']
@@ -797,13 +1021,11 @@ def register_commands(bot):
         
         player2_text += "\n📊 **Statistiques:**\n"
         
-        # Stats de games
         if stats2:
             player2_text += f"🎮 Games: **{stats2['total_games']}** ({stats2['wins']}W/{stats2['losses']}L)\n"
             player2_text += f"📈 WR: **{stats2['winrate']}%**\n"
             player2_text += f"⚔️ KDA: **{stats2['kda']}**\n"
             
-            # CS et Vision seulement si disponibles (pas ARAM)
             if stats2.get('cs_per_min'):
                 player2_text += f"🌾 CS/min: **{stats2['cs_per_min']}**\n"
             if stats2.get('avg_vision_score'):
@@ -820,7 +1042,6 @@ def register_commands(bot):
         # === VERDICT ===
         verdict_lines = []
         
-        # Comparer le rang
         if ranked1 and ranked2:
             rank_val1 = get_rank_value(tier1, rank1, lp1)
             rank_val2 = get_rank_value(tier2, rank2, lp2)
@@ -832,28 +1053,23 @@ def register_commands(bot):
             else:
                 verdict_lines.append("🏆 Rang: Égalité")
         
-        # Comparer les stats si disponibles
         if stats1 and stats2:
-            # WR
             if stats1['winrate'] > stats2['winrate']:
                 verdict_lines.append(f"📈 Meilleur WR: {joueur1.mention} ({stats1['winrate']}%)")
             elif stats2['winrate'] > stats1['winrate']:
                 verdict_lines.append(f"📈 Meilleur WR: {joueur2.mention} ({stats2['winrate']}%)")
             
-            # KDA
             if stats1['kda'] > stats2['kda']:
                 verdict_lines.append(f"⚔️ Meilleur KDA: {joueur1.mention} ({stats1['kda']})")
             elif stats2['kda'] > stats1['kda']:
                 verdict_lines.append(f"⚔️ Meilleur KDA: {joueur2.mention} ({stats2['kda']})")
             
-            # CS/min (seulement si les deux ont des données)
             if stats1.get('cs_per_min') and stats2.get('cs_per_min'):
                 if stats1['cs_per_min'] > stats2['cs_per_min']:
                     verdict_lines.append(f"🌾 Meilleur CS: {joueur1.mention} ({stats1['cs_per_min']}/min)")
                 elif stats2['cs_per_min'] > stats1['cs_per_min']:
                     verdict_lines.append(f"🌾 Meilleur CS: {joueur2.mention} ({stats2['cs_per_min']}/min)")
             
-            # Vision (seulement si les deux ont des données)
             if stats1.get('avg_vision_score') and stats2.get('avg_vision_score'):
                 if stats1['avg_vision_score'] > stats2['avg_vision_score']:
                     verdict_lines.append(f"👁️ Meilleure Vision: {joueur1.mention} ({stats1['avg_vision_score']})")
@@ -867,12 +1083,11 @@ def register_commands(bot):
                 inline=False
             )
         
-        embed.set_footer(text="Stats basées sur tous les modes de jeu cette saison")
+        footer_text = "Stats basées sur tous les modes de jeu cette saison"
+        if compte_joueur1 == "all" or compte_joueur2 == "all":
+            footer_text = "Stats agrégées si multiple comptes • " + footer_text
+        
+        embed.set_footer(text=footer_text)
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.followup.send(embed=embed)
-
-
-
-
-
