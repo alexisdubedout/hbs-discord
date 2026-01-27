@@ -31,15 +31,23 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
     """
     Récupère l'historique complet des matchs d'un joueur pour la saison en cours
     """
-    # VÉRIFICATION CRITIQUE DE LA DB AVANT DE COMMENCER
+    # ATTENDRE que la DB soit prête (retry 5 fois avec 2 sec entre chaque)
+    for attempt in range(5):
+        if bot.db and bot.db.pool:
+            break
+        
+        print(f"⚠️ Pool DB non prêt pour {riot_id}, tentative {attempt + 1}/5...")
+        await asyncio.sleep(2)
+    
+    # VÉRIFICATION FINALE
     if not bot.db or not bot.db.pool:
-        error_msg = f"❌ Database non initialisée pour {riot_id}!"
+        error_msg = f"❌ Database non initialisée pour {riot_id} après 5 tentatives!"
         print(error_msg)
         if progress_callback:
             try:
                 await progress_callback(
-                    f"❌ Erreur: Base de données non initialisée.\n"
-                    f"Attends quelques secondes que le bot soit complètement démarré."
+                    f"❌ Erreur: Base de données non prête.\n"
+                    f"Réessaye dans quelques minutes avec `/sync_account`."
                 )
             except:
                 pass
@@ -383,13 +391,20 @@ async def on_ready():
     except Exception as e:
         print(f"Erreur sync commandes: {e}")
     
-    # Attendre que le pool DB soit bien initialisé avant de démarrer les tasks
+    # Attendre 3 secondes pour s'assurer que tout est bien initialisé
+    print("⏳ Attente de 3 secondes pour stabilisation...")
+    await asyncio.sleep(3)
+    
+    # Vérifier le pool DB avant de démarrer les tasks
     if bot.db and bot.db.pool:
+        print("✅ Démarrage des tâches automatiques...")
         if not check_rank_changes.is_running():
             check_rank_changes.start()
         
         if not sync_match_history.is_running():
             sync_match_history.start()
+        
+        print("✅ Toutes les tâches sont démarrées")
     else:
         print("⚠️ Pool DB non disponible, tasks non démarrés")
 
