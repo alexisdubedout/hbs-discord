@@ -182,6 +182,129 @@ def register_commands(bot):
         else:
             await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
     
+    @bot.tree.command(name="sync_account", description="Force la synchronisation d'un de tes comptes")
+    @app_commands.describe(
+        compte="Quel compte synchroniser"
+    )
+    @app_commands.choices(compte=[
+        app_commands.Choice(name="1️⃣ Compte #1", value="1"),
+        app_commands.Choice(name="2️⃣ Compte #2", value="2"),
+        app_commands.Choice(name="3️⃣ Compte #3", value="3")
+    ])
+    async def sync_account(interaction: discord.Interaction, compte: str):
+        await interaction.response.defer()
+        
+        user_id = str(interaction.user.id)
+        accounts = await bot.db.get_linked_account(user_id)
+        
+        if not accounts:
+            await interaction.followup.send("❌ Tu n'as pas de compte lié.")
+            return
+        
+        account_index = int(compte)
+        selected_account = None
+        
+        for acc in accounts:
+            if acc['account_index'] == account_index:
+                selected_account = acc
+                break
+        
+        if not selected_account:
+            await interaction.followup.send(f"❌ Tu n'as pas de compte #{account_index}.")
+            return
+        
+        puuid = selected_account['puuid']
+        riot_id = selected_account['riot_id']
+        tagline = selected_account['tagline']
+        
+        await interaction.followup.send(
+            f"🔄 Synchronisation de **{riot_id}#{tagline}** en cours...\n"
+            f"⏳ Cela peut prendre plusieurs minutes."
+        )
+        
+        from bot import sync_player_full_history
+        import asyncio
+        
+        async def progress(msg):
+            try:
+                await interaction.edit_original_response(
+                    content=f"🔄 Sync: **{riot_id}#{tagline}**\n{msg}"
+                )
+            except:
+                pass
+        
+        new_matches = await sync_player_full_history(
+            puuid,
+            f"{riot_id}#{tagline}",
+            progress
+        )
+        
+        await interaction.edit_original_response(
+            content=f"✅ Synchronisation terminée pour **{riot_id}#{tagline}**\n"
+                    f"🎉 **{new_matches} matchs** récupérés !"
+        )
+    
+    @bot.tree.command(name="debug_account", description="[ADMIN] Vérifie les données d'un compte")
+    @app_commands.describe(
+        joueur="Le joueur à vérifier",
+        compte="Quel compte"
+    )
+    @app_commands.choices(compte=[
+        app_commands.Choice(name="Compte #1", value="1"),
+        app_commands.Choice(name="Compte #2", value="2"),
+        app_commands.Choice(name="Compte #3", value="3")
+    ])
+    async def debug_account(interaction: discord.Interaction, joueur: discord.Member, compte: str):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Admin seulement", ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        user_id = str(joueur.id)
+        accounts = await bot.db.get_linked_account(user_id)
+        
+        if not accounts:
+            await interaction.followup.send(f"❌ {joueur.mention} n'a pas de compte lié.")
+            return
+        
+        account_index = int(compte)
+        selected_account = None
+        
+        for acc in accounts:
+            if acc['account_index'] == account_index:
+                selected_account = acc
+                break
+        
+        if not selected_account:
+            await interaction.followup.send(f"❌ Pas de compte #{account_index}.")
+            return
+        
+        puuid = selected_account['puuid']
+        riot_id = selected_account['riot_id']
+        tagline = selected_account['tagline']
+        
+        # Vérifier la DB
+        match_count = await bot.db.get_match_count(puuid)
+        
+        # Vérifier l'API
+        from riot_api import get_match_list
+        match_ids = await get_match_list(puuid, start=0, count=5)
+        
+        debug_text = f"**{riot_id}#{tagline}**\n\n"
+        debug_text += f"🆔 PUUID: `{puuid[:20]}...`\n"
+        debug_text += f"📊 Matchs en DB: **{match_count}**\n"
+        debug_text += f"🔍 Derniers matchs API: **{len(match_ids) if match_ids else 0}**\n"
+        
+        if match_ids:
+            debug_text += f"\nDerniers match IDs:\n"
+            for mid in match_ids[:3]:
+                exists = await bot.db.match_exists(mid, puuid)
+                status = "✅ En DB" if exists else "❌ Manquant"
+                debug_text += f"`{mid[:20]}...` {status}\n"
+        
+        await interaction.followup.send(debug_text)
+    
     @bot.tree.command(name="admin_link", description="[ADMIN] Lie un compte Riot pour un autre utilisateur")
     @app_commands.describe(
         user="L'utilisateur Discord",
@@ -723,10 +846,6 @@ def register_commands(bot):
             tier = best_ranked_stats['tier']
             rank = best_ranked_stats['rank']
             lp = best_ranked_stats['leaguePoints']
-            wins = best_ranked_stats['wins']
-            losses = best_ranked_stats['losses']
-            total = wins + losses
-            wr = round((wins / total) * 100, 1) if total > 0 else 0
             
             emoji = RANK_EMOJIS.get(tier, "❓")
             
@@ -735,9 +854,7 @@ def register_commands(bot):
             else:
                 rank_text = f"{emoji} **{tier.title()} {rank}** - {lp} LP"
             
-            rank_text += f"\n`{wins}W {losses}L - {wr}% WR`"
-            
-            rank_title = "🏆 Meilleur Rang" if compte == "all" else "🏆 Rang Ranked Solo/Duo"
+            rank_title = "🏆 Meilleur Rang Ranked" if compte == "all" else "🏆 Rang Ranked Solo/Duo"
             embed.add_field(name=rank_title, value=rank_text, inline=False)
         else:
             embed.add_field(
@@ -753,7 +870,7 @@ def register_commands(bot):
             general_text += f"❌ **Défaites:** {match_stats['losses']}\n"
             
             embed.add_field(
-                name="📈 Statistiques Générales",
+                name=f"📈 Matchs Analysés ({mode_display})",
                 value=general_text,
                 inline=True
             )
@@ -842,8 +959,8 @@ def register_commands(bot):
                 )
         else:
             embed.add_field(
-                name="📊 Statistiques",
-                value=f"Aucune donnée de match disponible pour le mode sélectionné.\nJoue quelques games et attends la prochaine synchronisation !",
+                name="📊 Matchs Analysés",
+                value=f"Aucune donnée de match disponible pour le mode sélectionné.\nUtilise `/sync_account` pour forcer la synchronisation !",
                 inline=False
             )
         
