@@ -60,7 +60,7 @@ def register_commands(bot):
             )
             
             # Lancer la sync complète en arrière-plan
-            from bot import sync_player_full_history
+            from sync import sync_player_full_history
             import asyncio
             
             async def sync_with_updates():
@@ -73,6 +73,7 @@ def register_commands(bot):
                         pass
                 
                 new_matches = await sync_player_full_history(
+                    bot,  # Passer le bot en paramètre
                     account['puuid'], 
                     f"{riot_id}#{tagline}",
                     progress
@@ -152,7 +153,7 @@ def register_commands(bot):
             )
             
             # Lancer la sync complète en arrière-plan
-            from bot import sync_player_full_history
+            from sync import sync_player_full_history
             import asyncio
             
             async def sync_with_updates():
@@ -165,6 +166,7 @@ def register_commands(bot):
                         pass
                 
                 new_matches = await sync_player_full_history(
+                    bot,  # Passer le bot en paramètre
                     account['puuid'], 
                     f"{riot_id}#{tagline}",
                     progress
@@ -240,7 +242,7 @@ def register_commands(bot):
             f"⏳ Cela peut prendre plusieurs minutes."
         )
         
-        from bot import sync_player_full_history
+        from sync import sync_player_full_history
         import asyncio
         
         async def progress(msg):
@@ -252,6 +254,7 @@ def register_commands(bot):
                 pass
         
         new_matches = await sync_player_full_history(
+            bot,  # Passer le bot en paramètre
             puuid,
             f"{riot_id}#{tagline}",
             progress
@@ -383,7 +386,7 @@ def register_commands(bot):
             f"⏳ Cela peut prendre plusieurs minutes. Je te tiens au courant !"
         )
         
-        from bot import sync_player_full_history
+        from sync import sync_player_full_history
         import asyncio
         
         total_new_matches = 0
@@ -403,7 +406,7 @@ def register_commands(bot):
                                 f"📥 En cours: **{riot_id}#{tagline}** ({existing_count} matchs déjà en DB)..."
                     )
                     
-                    new_matches = await sync_player_full_history(puuid, f"{riot_id}#{tagline}")
+                    new_matches = await sync_player_full_history(bot, puuid, f"{riot_id}#{tagline}")  # Passer le bot
                     total_new_matches += new_matches
                     completed += 1
                     
