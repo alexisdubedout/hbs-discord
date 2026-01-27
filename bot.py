@@ -174,9 +174,12 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
             # Récupérer le discord_id depuis le puuid
             linked_accounts = await bot.db.get_all_linked_accounts()
             discord_id = None
-            for did, account_info in linked_accounts.items():
-                if account_info['puuid'] == puuid:
-                    discord_id = did
+            for did, accounts_list in linked_accounts.items():
+                for account_info in accounts_list:
+                    if account_info['puuid'] == puuid:
+                        discord_id = did
+                        break
+                if discord_id:
                     break
             
             if not discord_id:
@@ -380,11 +383,15 @@ async def on_ready():
     except Exception as e:
         print(f"Erreur sync commandes: {e}")
     
-    if not check_rank_changes.is_running():
-        check_rank_changes.start()
-    
-    if not sync_match_history.is_running():
-        sync_match_history.start()
+    # Attendre que le pool DB soit bien initialisé avant de démarrer les tasks
+    if bot.db and bot.db.pool:
+        if not check_rank_changes.is_running():
+            check_rank_changes.start()
+        
+        if not sync_match_history.is_running():
+            sync_match_history.start()
+    else:
+        print("⚠️ Pool DB non disponible, tasks non démarrés")
 
 @bot.event
 async def on_message(message):
@@ -407,9 +414,11 @@ async def on_voice_state_update(member, before, after):
             await send_link_reminder(member)
 
 # === TASKS 30 MINUTES ===
+@tasks.loop(minutes=30)
 async def check_rank_changes():
     """Vérifie les changements de rang toutes les 30 minutes"""
-    if not bot.db.pool:
+    if not bot.db or not bot.db.pool:
+        print("⚠️ Pool DB non disponible pour check_rank_changes")
         return
 
     linked_accounts = await bot.db.get_all_linked_accounts()
@@ -502,7 +511,7 @@ async def check_rank_changes():
 @tasks.loop(minutes=30)
 async def sync_match_history():
     """Synchronise l'historique des 5 derniers matchs toutes les 30 minutes et envoie les milestones"""
-    if not bot.db.pool:
+    if not bot.db or not bot.db.pool:
         print("⚠️ Pool DB non disponible pour sync_match_history")
         return
     
@@ -645,9 +654,3 @@ async def sync_match_history():
 # === RUN BOT ===
 if __name__ == "__main__":
     bot.run(DISCORD_TOKEN)
-
-
-
-
-
-
