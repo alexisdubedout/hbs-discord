@@ -16,9 +16,12 @@ class LoLBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = Database()
         self.syncing_players = set()
+        self.db_ready = False  # Flag pour indiquer que la DB est prête
     
     async def setup_hook(self):
         await self.db.connect()
+        self.db_ready = True  # Marquer la DB comme prête
+        print("✅ Database prête et flag db_ready activé")
         # Importer commands APRÈS initialisation du bot
         from commands import register_commands
         register_commands(self)
@@ -32,8 +35,15 @@ async def sync_player_full_history(puuid: str, riot_id: str, progress_callback=N
     Récupère l'historique complet des matchs d'un joueur pour la saison en cours
     """
     # ATTENDRE que la DB soit prête (retry 5 fois avec 2 sec entre chaque)
+    print(f"🔍 sync_player_full_history pour {riot_id}")
+    print(f"   └─ bot.db existe: {bot.db is not None}")
+    if bot.db:
+        print(f"   └─ bot.db.pool existe: {bot.db.pool is not None}")
+        print(f"   └─ bot.db ID: {id(bot.db)}, pool ID: {id(bot.db.pool) if bot.db.pool else 'None'}")
+    
     for attempt in range(5):
         if bot.db and bot.db.pool:
+            print(f"✅ DB prête pour {riot_id} après {attempt + 1} tentatives")
             break
         
         print(f"⚠️ Pool DB non prêt pour {riot_id}, tentative {attempt + 1}/5...")
