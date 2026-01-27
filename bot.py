@@ -395,6 +395,10 @@ async def on_ready():
     print(f"{bot.user} est connecté !")
     print(f"✅ Database pool: {bot.db.pool is not None}")
     
+    # Nettoyer les syncs zombies
+    bot.syncing_players.clear()
+    print("🧹 Nettoyage des syncing_players...")
+    
     try:
         synced = await bot.tree.sync()
         print(f"Synchronisé {len(synced)} commandes")
