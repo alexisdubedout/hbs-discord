@@ -182,23 +182,36 @@ def register_commands(bot):
         else:
             await interaction.followup.send("❌ Erreur lors de la sauvegarde.")
     
-    @bot.tree.command(name="sync_account", description="Force la synchronisation d'un de tes comptes")
+    @bot.tree.command(name="sync_account", description="Force la synchronisation d'un compte")
     @app_commands.describe(
-        compte="Quel compte synchroniser"
+        compte="Quel compte synchroniser",
+        joueur="Le joueur (laisse vide pour toi-même, admin seulement pour les autres)"
     )
     @app_commands.choices(compte=[
         app_commands.Choice(name="1️⃣ Compte #1", value="1"),
         app_commands.Choice(name="2️⃣ Compte #2", value="2"),
         app_commands.Choice(name="3️⃣ Compte #3", value="3")
     ])
-    async def sync_account(interaction: discord.Interaction, compte: str):
+    async def sync_account(interaction: discord.Interaction, compte: str, joueur: discord.Member = None):
         await interaction.response.defer()
         
-        user_id = str(interaction.user.id)
+        # Déterminer le joueur cible
+        target_user = joueur if joueur else interaction.user
+        
+        # Vérifier les permissions si c'est pour quelqu'un d'autre
+        if joueur and joueur != interaction.user:
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.followup.send("❌ Seuls les admins peuvent synchroniser le compte d'un autre joueur.", ephemeral=True)
+                return
+        
+        user_id = str(target_user.id)
         accounts = await bot.db.get_linked_account(user_id)
         
         if not accounts:
-            await interaction.followup.send("❌ Tu n'as pas de compte lié.")
+            if target_user == interaction.user:
+                await interaction.followup.send("❌ Tu n'as pas de compte lié.")
+            else:
+                await interaction.followup.send(f"❌ {target_user.mention} n'a pas de compte lié.")
             return
         
         account_index = int(compte)
@@ -210,15 +223,20 @@ def register_commands(bot):
                 break
         
         if not selected_account:
-            await interaction.followup.send(f"❌ Tu n'as pas de compte #{account_index}.")
+            if target_user == interaction.user:
+                await interaction.followup.send(f"❌ Tu n'as pas de compte #{account_index}.")
+            else:
+                await interaction.followup.send(f"❌ {target_user.mention} n'a pas de compte #{account_index}.")
             return
         
         puuid = selected_account['puuid']
         riot_id = selected_account['riot_id']
         tagline = selected_account['tagline']
         
+        target_mention = "ton compte" if target_user == interaction.user else f"le compte de {target_user.mention}"
+        
         await interaction.followup.send(
-            f"🔄 Synchronisation de **{riot_id}#{tagline}** en cours...\n"
+            f"🔄 Synchronisation de **{riot_id}#{tagline}** ({target_mention}) en cours...\n"
             f"⏳ Cela peut prendre plusieurs minutes."
         )
         
