@@ -4,21 +4,41 @@ from config import DATABASE_URL
 class Database:
     def __init__(self):
         self.pool = None
+        print("🔧 Database instance créée")
     
     async def connect(self):
         """Initialise la connexion à la base de données"""
-        if DATABASE_URL:
-            try:
-                self.pool = await asyncpg.create_pool(DATABASE_URL)
-                print("✅ Connecté à PostgreSQL")
-                await self.init_tables()
-            except Exception as e:
-                print(f"❌ Erreur de connexion à PostgreSQL: {e}")
-        else:
+        if not DATABASE_URL:
             print("⚠️ DATABASE_URL non trouvé")
+            return
+        
+        try:
+            print(f"🔄 Tentative de connexion à PostgreSQL...")
+            self.pool = await asyncpg.create_pool(DATABASE_URL)
+            print(f"✅ Connecté à PostgreSQL")
+            print(f"✅ Pool créé: {self.pool is not None}, ID: {id(self.pool)}")
+            
+            await self.init_tables()
+            
+            # Vérification finale
+            if self.pool is None:
+                print("❌ CRITIQUE: Pool est None après création!")
+            else:
+                print(f"✅ Database complètement initialisée, Pool ID: {id(self.pool)}")
+                
+        except Exception as e:
+            print(f"❌ Erreur de connexion à PostgreSQL: {e}")
+            import traceback
+            traceback.print_exc()
+            self.pool = None
     
     async def init_tables(self):
         """Crée les tables si elles n'existent pas"""
+        if not self.pool:
+            print("❌ init_tables: pool est None!")
+            return
+            
+        print("🔄 Initialisation des tables...")
         async with self.pool.acquire() as conn:
             # === MIGRATION: Ajouter account_index à linked_accounts ===
             # 1. Vérifier si la colonne existe déjà
@@ -397,7 +417,7 @@ class Database:
     async def save_match_stats(self, match_id: str, puuid: str, stats: dict):
         """Sauvegarde les stats d'un match pour un joueur"""
         if not self.pool:
-            print("❌ DEBUG: pool est None!")
+            print(f"❌ save_match_stats: pool est None! (ID instance: {id(self)})")
             return False
         
         try:
